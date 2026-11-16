@@ -9,7 +9,7 @@ import org.springframework.http.HttpStatus;
 public enum ErrorCode {
 
   INVALID_REQUEST(HttpStatus.BAD_REQUEST, "요청 형식이나 입력값이 올바르지 않습니다."),
-  NICKNAME_TOO_LONG(HttpStatus.BAD_REQUEST, "닉네임은 1~12글자"),
+  NICKNAME_TOO_LONG(HttpStatus.BAD_REQUEST, "닉네임은 12글자 이하여야합니다."),
   INTERNAL_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.");
 
   private final HttpStatus httpStatus;

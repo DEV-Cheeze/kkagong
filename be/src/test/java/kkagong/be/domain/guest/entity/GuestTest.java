@@ -1,12 +1,20 @@
 package kkagong.be.domain.guest.entity;
 
 import static org.assertj.core.api.Assertions.assertThat;
-import static org.junit.jupiter.api.Assertions.*;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
+import java.util.stream.Stream;
 import kkagong.be.domain.guest.enums.CharacterType;
 import kkagong.be.domain.guest.enums.DrinkType;
+import kkagong.be.global.exception.ErrorCode;
+import kkagong.be.global.exception.ErrorException;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.Arguments;
+import org.junit.jupiter.params.provider.EmptySource;
+import org.junit.jupiter.params.provider.MethodSource;
+import org.junit.jupiter.params.provider.ValueSource;
 
 class GuestTest {
 
@@ -61,5 +69,56 @@ class GuestTest {
 
   }
 
+  @Test
+  @DisplayName("닉네임이 null이면 미선택으로 보고 기본 닉네임을 적용한다")
+  void nullNicknameUsesDefault() {
+    Guest guest = Guest.create(CharacterType.Default_Male, null, DrinkType.Americano_ICE);
 
+    assertThat(guest.getNickname()).isEqualTo("까공이");
+  }
+
+  @ParameterizedTest
+  @EmptySource
+  @ValueSource(strings = {" ", "   ", "\t\n"})
+  @DisplayName("첫 생성의 빈 문자열이나 공백뿐인 닉네임은 기본값을 적용하고 다른 선택값은 유지한다")
+  void blankNicknameUsesDefault(String nickname) {
+    Guest guest = Guest.create(CharacterType.Default_Female, nickname, DrinkType.Americano_ICE);
+
+    assertThat(guest.getNickname()).isEqualTo("까공이");
+    assertThat(guest.getCharacterType()).isEqualTo(CharacterType.Default_Female);
+    assertThat(guest.getDrinkType()).isEqualTo(DrinkType.Americano_ICE);
+  }
+
+  @ParameterizedTest(name = "{0}")
+  @MethodSource("validNicknames")
+  @DisplayName("닉네임은 앞뒤 공백을 제거한 뒤 1~12자를 허용하고 내부 공백은 유지한다")
+  void nicknameIsValidatedAfterTrimming(
+      String scenario, String nickname, String expectedNickname) {
+    Guest guest = Guest.create(CharacterType.Default_Male, nickname, DrinkType.Americano_ICE);
+
+    assertThat(guest.getNickname()).isEqualTo(expectedNickname);
+  }
+
+  private static Stream<Arguments> validNicknames() {
+    return Stream.of(
+        Arguments.of("길이 하한 1자", "가", "가"),
+        Arguments.of("길이 상한 12자", "123456789012", "123456789012"),
+        Arguments.of("공백 제거 후 1자", " 가 ", "가"),
+        Arguments.of("앞뒤 공백 제거", " 까공 ", "까공"),
+        Arguments.of("원문은 14자이지만 공백 제거 후 12자",
+            " 123456789012 ", "123456789012"),
+        Arguments.of("닉네임 내부 공백 유지", " 공부 하는 사람 ", "공부 하는 사람")
+    );
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"1234567890123", " 1234567890123 "})
+  @DisplayName("앞뒤 공백을 제거한 뒤에도 13자인 닉네임은 거부한다")
+  void nicknameLongerThan12AfterTrimmingIsRejected(String nickname) {
+    assertThatThrownBy(() ->
+        Guest.create(CharacterType.Default_Male, nickname, DrinkType.Americano_ICE))
+        .isInstanceOfSatisfying(ErrorException.class,
+            exception -> assertThat(exception.getErrorCode())
+                .isEqualTo(ErrorCode.NICKNAME_TOO_LONG));
+  }
 }

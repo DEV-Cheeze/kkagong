@@ -5,7 +5,9 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.GeneratedValue;
+import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 import java.time.LocalDateTime;
 import kkagong.be.domain.guest.enums.CharacterType;
@@ -25,8 +27,11 @@ import lombok.NoArgsConstructor;
 public class Guest extends BaseEntity {
 
   @Id
-  @GeneratedValue
-  private Long id;
+  @SequenceGenerator(name = "guestIdGenerator",
+      sequenceName = "guest_seq")
+  @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "guestIdGenerator")
+  @Column(name = "guestId")
+  private Long guestId;
 
   @Column(name = "auth_token_hash", unique = true, nullable = false)
   private String authTokenHash;
