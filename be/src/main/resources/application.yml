@@ -5,6 +5,8 @@ spring:
   datasource:
     hikari:
       auto-commit: false
+  flyway:
+    enabled: false
   jpa:
     properties:
       hibernate:
