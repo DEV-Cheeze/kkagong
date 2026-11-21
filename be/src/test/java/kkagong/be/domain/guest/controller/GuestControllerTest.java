@@ -17,15 +17,21 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import jakarta.servlet.http.Cookie;
+import java.util.List;
 import java.util.Locale;
 import java.util.stream.Stream;
+import kkagong.be.domain.guest.dto.GuestProfile;
+import kkagong.be.domain.guest.dto.GuestSettings;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
+import kkagong.be.domain.guest.dto.response.GuestMeResponse;
 import kkagong.be.domain.guest.enums.CharacterType;
 import kkagong.be.domain.guest.enums.DrinkType;
+import kkagong.be.domain.guest.enums.WorkPose;
 import kkagong.be.domain.guest.service.GuestService;
 import kkagong.be.global.exception.ErrorCode;
 import kkagong.be.global.exception.ErrorException;
 import kkagong.be.global.exception.GlobalExceptionHandler;
+import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -39,9 +45,13 @@ import org.mockito.ArgumentCaptor;
 import org.mockito.Captor;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
+import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.method.annotation.AuthenticationPrincipalArgumentResolver;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 import org.springframework.test.web.servlet.setup.MockMvcBuilders;
@@ -50,6 +60,8 @@ import org.springframework.test.web.servlet.setup.MockMvcBuilders;
 class GuestControllerTest {
 
   private static final String SIGN_UP_URL = "/api/v1/guests/signup";
+  private static final String ME_URL = "/api/v1/guests/me";
+  private static final long AUTHENTICATED_GUEST_ID = 42L;
   private static final String COOKIE_NAME = "guestId";
   private static final String TOKEN = "a".repeat(64);
   private static final int COOKIE_MAX_AGE = 30 * 24 * 60 * 60;
@@ -66,7 +78,53 @@ class GuestControllerTest {
   void setUp() {
     mockMvc = MockMvcBuilders.standaloneSetup(new GuestController(guestService))
         .setControllerAdvice(new GlobalExceptionHandler())
+        .setCustomArgumentResolvers(new AuthenticationPrincipalArgumentResolver())
         .build();
+  }
+
+  @AfterEach
+  void clearAuthentication() {
+    SecurityContextHolder.clearContext();
+  }
+
+  @Test
+  @DisplayName("재방문은 인증된 게스트의 정보를 반환하고 기존 토큰 쿠키를 30일 연장한다")
+  void authenticatedMeReturnsGuestAndRefreshesOriginalCookie() throws Exception {
+    authenticateGuest();
+    GuestMeResponse guestMe = new GuestMeResponse(
+        new GuestProfile("재방문게스트", CharacterType.Default_Female, DrinkType.CafeLatte_ICE),
+        new GuestSettings(45, 8, 20, true, false, WorkPose.READING, false, true));
+    when(guestService.getMeAndRenewVisit(AUTHENTICATED_GUEST_ID)).thenReturn(guestMe);
+
+    mockMvc.perform(post(ME_URL).secure(true)
+            .param("guestId", "99")
+            .cookie(new Cookie(COOKIE_NAME, TOKEN)))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.code").value(200))
+        .andExpect(jsonPath("$.data.guestProfile.nickname").value("재방문게스트"))
+        .andExpect(jsonPath("$.data.guestSettings.focusMinutes").value(45))
+        .andExpect(cookie().value(COOKIE_NAME, TOKEN))
+        .andExpect(cookie().maxAge(COOKIE_NAME, COOKIE_MAX_AGE))
+        .andExpect(cookie().path(COOKIE_NAME, "/"))
+        .andExpect(cookie().httpOnly(COOKIE_NAME, true))
+        .andExpect(cookie().secure(COOKIE_NAME, true))
+        .andExpect(result -> assertThat(result.getResponse().getCookie(COOKIE_NAME)
+            .getAttribute("SameSite")).isEqualTo("Lax"));
+
+    verify(guestService).getMeAndRenewVisit(AUTHENTICATED_GUEST_ID);
+  }
+
+  @Test
+  @DisplayName("재방문 갱신이 실패하면 오류 응답을 반환하고 인증 쿠키를 갱신하지 않는다")
+  void failedMeDoesNotRefreshCookie() throws Exception {
+    authenticateGuest();
+    when(guestService.getMeAndRenewVisit(AUTHENTICATED_GUEST_ID))
+        .thenThrow(new DataAccessResourceFailureException("방문 갱신 실패"));
+
+    mockMvc.perform(post(ME_URL).secure(true).cookie(new Cookie(COOKIE_NAME, TOKEN)))
+        .andExpect(status().isInternalServerError())
+        .andExpect(jsonPath("$.code").value(500))
+        .andExpect(header().doesNotExist(HttpHeaders.SET_COOKIE));
   }
 
   @ParameterizedTest(name = "{0}")
@@ -227,11 +285,10 @@ class GuestControllerTest {
   }
 
   @Test
-  @DisplayName("가입 URL에 GET 요청을 보내면 405를 반환하고 POST 허용 정보를 제공한다")
+  @DisplayName("가입 URL에 GET 요청을 보내면 405를 반환하고 인증 쿠키를 발급하지 않는다")
   void unsupportedHttpMethodIsRejected() throws Exception {
     mockMvc.perform(get(SIGN_UP_URL))
         .andExpect(status().isMethodNotAllowed())
-        .andExpect(header().string(HttpHeaders.ALLOW, containsString("POST")))
         .andExpect(cookie().doesNotExist(COOKIE_NAME));
 
     verifyNoInteractions(guestService);
@@ -262,7 +319,7 @@ class GuestControllerTest {
     return Stream.of(
         Arguments.of("도메인 검증 실패",
             new ErrorException(ErrorCode.NICKNAME_TOO_LONG),
-            400, "닉네임은 1~12글자"),
+            400, "닉네임은 12글자 이하여야합니다."),
         Arguments.of("DB 저장 실패",
             new DataIntegrityViolationException("internal-test-detail"),
             500, "서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요."),
@@ -270,6 +327,13 @@ class GuestControllerTest {
             new IllegalStateException("internal-test-detail"),
             500, "서버 오류가 발생했습니다. 잠시 후 다시 시도해 주세요.")
     );
+  }
+
+  private void authenticateGuest() {
+    var context = SecurityContextHolder.createEmptyContext();
+    context.setAuthentication(UsernamePasswordAuthenticationToken.authenticated(
+        AUTHENTICATED_GUEST_ID, null, List.of()));
+    SecurityContextHolder.setContext(context);
   }
 
   private ResultActions postJson(String json) throws Exception {

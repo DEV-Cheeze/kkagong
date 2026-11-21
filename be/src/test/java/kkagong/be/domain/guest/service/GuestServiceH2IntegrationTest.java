@@ -13,11 +13,15 @@ import java.sql.SQLException;
 import java.time.LocalDateTime;
 import java.util.stream.Stream;
 import javax.sql.DataSource;
+import kkagong.be.domain.guest.dto.GuestProfile;
+import kkagong.be.domain.guest.dto.GuestSettings;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
+import kkagong.be.domain.guest.dto.response.GuestMeResponse;
 import kkagong.be.domain.guest.entity.Guest;
 import kkagong.be.domain.guest.entity.GuestSetting;
 import kkagong.be.domain.guest.enums.CharacterType;
 import kkagong.be.domain.guest.enums.DrinkType;
+import kkagong.be.domain.guest.enums.WorkPose;
 import kkagong.be.domain.guest.repository.GuestRepository;
 import kkagong.be.domain.guest.repository.GuestSettingRepository;
 import kkagong.be.global.exception.ErrorCode;
@@ -299,6 +303,41 @@ class GuestServiceH2IntegrationTest {
     assertThat(guestCount()).isEqualTo(1);
     assertThat(settingCount()).isEqualTo(1);
     assertDefaultSettings(findSettings(storedGuest.guestId()), storedGuest.guestId());
+  }
+
+  @Test
+  @DisplayName("재방문은 저장된 프로필과 설정을 반환하고 기존 게스트의 만료를 30일 연장한다")
+  void visitReturnsStoredGuestAndSettingsAndCommitsRenewal() {
+    String token = guestService.guestSignUp(new GuestSignUpRequest(
+        "재방문게스트", CharacterType.Default_Female, DrinkType.CafeLatte_ICE));
+    String tokenHash = sessionTokenGenerator.hashForLookup(token);
+    long guestId = findGuestByHash(tokenHash).guestId();
+    LocalDateTime previousVisit = LocalDateTime.now().minusDays(10);
+    jdbcTemplate.update("update guest set last_seen_at = ?, expires_at = ? where guest_id = ?",
+        previousVisit, previousVisit.plusDays(30), guestId);
+    jdbcTemplate.update("""
+        update guest_setting
+        set focus_minutes = 45, short_break_minutes = 8, long_break_minutes = 20,
+            auto_transition = true, share_current_task = false, preferred_work_pose = 'READING',
+            end_sound_enabled = false, master_muted = true
+        where guest_id = ?
+        """, guestId);
+    StoredSettings storedSettings = findSettings(guestId);
+
+    LocalDateTime before = LocalDateTime.now().minusSeconds(1);
+    GuestMeResponse response = guestService.getMeAndRenewVisit(guestId);
+    LocalDateTime after = LocalDateTime.now().plusSeconds(1);
+
+    assertThat(response).isEqualTo(new GuestMeResponse(
+        new GuestProfile("재방문게스트", CharacterType.Default_Female, DrinkType.CafeLatte_ICE),
+        new GuestSettings(45, 8, 20, true, false, WorkPose.READING, false, true)));
+    StoredGuest renewed = findGuestByHash(tokenHash);
+    assertThat(renewed.guestId()).isEqualTo(guestId);
+    assertThat(renewed.lastSeenAt()).isBetween(before, after);
+    assertThat(renewed.expiresAt()).isEqualTo(renewed.lastSeenAt().plusDays(30));
+    assertThat(findSettings(guestId)).isEqualTo(storedSettings);
+    assertThat(guestCount()).isEqualTo(1);
+    assertThat(settingCount()).isEqualTo(1);
   }
 
   @Test

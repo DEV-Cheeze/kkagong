@@ -12,6 +12,7 @@ import static org.mockito.Mockito.verifyNoMoreInteractions;
 import static org.mockito.Mockito.when;
 
 import java.time.LocalDateTime;
+import java.util.Optional;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
 import kkagong.be.domain.guest.entity.Guest;
 import kkagong.be.domain.guest.enums.CharacterType;
@@ -113,6 +114,21 @@ class GuestServiceTest {
     when(guestRepository.save(any(Guest.class))).thenThrow(failure);
 
     assertThatThrownBy(() -> guestService.guestSignUp(validRequest())).isSameAs(failure);
+  }
+
+  @Test
+  @DisplayName("재방문할 게스트가 없으면 GUEST_NOT_FOUND를 반환하고 저장소를 변경하지 않는다")
+  void visitForMissingGuestDoesNotRenewExpiration() {
+    long guestId = 42L;
+    when(guestRepository.findById(guestId)).thenReturn(Optional.empty());
+
+    assertThatThrownBy(() -> guestService.getMeAndRenewVisit(guestId))
+        .isInstanceOfSatisfying(ErrorException.class,
+            exception -> assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.GUEST_NOT_FOUND));
+
+    verify(guestRepository).findById(guestId);
+    verifyNoMoreInteractions(guestRepository);
+    verifyNoInteractions(sessionTokenGenerator, guestSettingService);
   }
 
   @Test
