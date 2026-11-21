@@ -1,6 +1,7 @@
 package kkagong.be.domain.guest.service;
 
 import jakarta.transaction.Transactional;
+import java.time.LocalDateTime;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
 import kkagong.be.domain.guest.entity.Guest;
 import kkagong.be.domain.guest.repository.GuestRepository;
@@ -13,6 +14,7 @@ public class GuestService {
 
   private final SessionTokenGenerator sessionTokenGenerator;
   private final GuestRepository guestRepository;
+  private final GuestSettingService guestSettingService;
 
   @Transactional
   public String guestSignUp(GuestSignUpRequest request){
@@ -27,9 +29,19 @@ public class GuestService {
 
     //Sha-256값 리턴
     guestRepository.save(guest);
-    
+    guestSettingService.initialize(guest);
+
     return token;
   }
 
+
+
+  @Transactional
+  public void renewGuestExpiration(Long guestId){
+
+    LocalDateTime now = LocalDateTime.now();
+    guestRepository.renewGuestExpiration(guestId, now);
+
+  }
 
 }

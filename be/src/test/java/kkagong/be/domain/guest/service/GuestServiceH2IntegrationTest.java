@@ -2,6 +2,8 @@ package kkagong.be.domain.guest.service;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.assertj.core.api.SoftAssertions.assertSoftly;
+import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.doReturn;
 import static org.mockito.Mockito.doThrow;
@@ -12,9 +14,12 @@ import java.time.LocalDateTime;
 import java.util.stream.Stream;
 import javax.sql.DataSource;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
+import kkagong.be.domain.guest.entity.Guest;
+import kkagong.be.domain.guest.entity.GuestSetting;
 import kkagong.be.domain.guest.enums.CharacterType;
 import kkagong.be.domain.guest.enums.DrinkType;
 import kkagong.be.domain.guest.repository.GuestRepository;
+import kkagong.be.domain.guest.repository.GuestSettingRepository;
 import kkagong.be.global.exception.ErrorCode;
 import kkagong.be.global.exception.ErrorException;
 import org.junit.jupiter.api.AfterEach;
@@ -45,12 +50,18 @@ import org.springframework.transaction.annotation.Transactional;
 })
 @AutoConfigureTestDatabase(replace = Replace.ANY)
 @ActiveProfiles("test")
-@Import({GuestService.class, SessionTokenGenerator.class})
+@Import({GuestService.class, GuestSettingService.class, AuthService.class, SessionTokenGenerator.class})
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class GuestServiceH2IntegrationTest {
 
   @Autowired
   private GuestService guestService;
+
+  @Autowired
+  private AuthService authService;
+
+  @Autowired
+  private GuestSettingService guestSettingService;
 
   @Autowired
   private GuestRepository guestRepository;
@@ -63,6 +74,9 @@ class GuestServiceH2IntegrationTest {
 
   @MockitoSpyBean
   private SessionTokenGenerator sessionTokenGenerator;
+
+  @MockitoSpyBean
+  private GuestSettingRepository guestSettingRepository;
 
   @BeforeEach
   void prepareDatabase() throws SQLException {
@@ -226,7 +240,7 @@ class GuestServiceH2IntegrationTest {
   }
 
   @Test
-  @DisplayName("토큰 해시 UNIQUE 제약으로 저장이 실패하면 두 번째 가입은 롤백되고 기존 행은 유지된다")
+  @DisplayName("DB의 토큰 해시 UNIQUE 제약이 두 번째 가입을 거부하고 기존 행을 보존한다")
   void duplicateTokenHashRollsBackSecondSignUp() {
     String fixedToken = "a".repeat(64);
     doReturn(fixedToken).when(sessionTokenGenerator).generate();
@@ -238,10 +252,193 @@ class GuestServiceH2IntegrationTest {
 
     assertThatThrownBy(() -> guestService.guestSignUp(
         new GuestSignUpRequest("두번째게스트", CharacterType.Default_Female, DrinkType.CafeLatte_ICE)))
-        .isInstanceOf(DataIntegrityViolationException.class);
+        .isInstanceOf(DataIntegrityViolationException.class)
+        .rootCause()
+        .isInstanceOfSatisfying(SQLException.class,
+            exception -> assertThat(exception.getSQLState()).isEqualTo("23505"));
 
     assertThat(guestCount()).isEqualTo(1);
     assertThat(findGuestByHash(hash)).isEqualTo(original);
+  }
+
+  @Test
+  @DisplayName("가입 성공 시 게스트와 공통 설정 기본값 한 행이 함께 커밋된다")
+  void signUpCommitsGuestAndDefaultSettingsTogether() {
+    String token = guestService.guestSignUp(new GuestSignUpRequest(null, null, null));
+    StoredGuest guest = findGuestByHash(sessionTokenGenerator.hashForLookup(token));
+
+    assertThat(guestCount()).isEqualTo(1);
+    assertThat(settingCount()).isEqualTo(1);
+    assertDefaultSettings(findSettings(guest.guestId()), guest.guestId());
+  }
+
+  @Test
+  @DisplayName("공통 설정 저장이 실패하면 가입 토큰을 반환하지 않고 게스트 생성도 함께 롤백된다")
+  void defaultSettingsFailureRollsBackGuestSignUp() {
+    DataIntegrityViolationException failure =
+        new DataIntegrityViolationException("공통 설정 저장 실패");
+    doThrow(failure).when(guestSettingRepository).save(any(GuestSetting.class));
+
+    assertThatThrownBy(
+        () -> guestService.guestSignUp(new GuestSignUpRequest(null, null, null)))
+        .isSameAs(failure);
+
+    assertThat(guestCount()).isZero();
+    assertThat(settingCount()).isZero();
+  }
+
+  @Test
+  @DisplayName("설정 초기화 서비스는 기존 게스트에 기본값을 실제 H2에 커밋한다")
+  void settingServiceCommitsDefaultSettings() {
+    LocalDateTime now = LocalDateTime.now();
+    StoredGuest storedGuest = createStoredGuest("c".repeat(64), now, now.plusDays(30));
+    Guest guest = guestRepository.findById(storedGuest.guestId()).orElseThrow();
+
+    guestSettingService.initialize(guest);
+
+    assertThat(guestCount()).isEqualTo(1);
+    assertThat(settingCount()).isEqualTo(1);
+    assertDefaultSettings(findSettings(storedGuest.guestId()), storedGuest.guestId());
+  }
+
+  @Test
+  @DisplayName("정상 방문 갱신은 최근 방문을 현재로 바꾸고 그 시각부터 만료를 30일 연장해 커밋한다")
+  void renewalCommitsLastSeenAndThirtyDayExpiration() {
+    LocalDateTime previousVisit = LocalDateTime.now().minusDays(10);
+    StoredGuest guest = createStoredGuest(
+        "d".repeat(64), previousVisit, previousVisit.plusDays(30));
+    LocalDateTime before = LocalDateTime.now().minusSeconds(1);
+
+    guestService.renewGuestExpiration(guest.guestId());
+
+    LocalDateTime after = LocalDateTime.now().plusSeconds(1);
+    StoredGuest renewed = findGuestByHash(guest.authTokenHash());
+    assertSoftly(softly -> {
+      softly.assertThat(renewed.lastSeenAt()).isBetween(before, after);
+      softly.assertThat(renewed.expiresAt()).isEqualTo(renewed.lastSeenAt().plusDays(30));
+      softly.assertThat(renewed.expiresAt()).isAfter(after);
+    });
+    assertThat(guestCount()).isEqualTo(1);
+  }
+
+  @Test
+  @DisplayName("한 게스트의 기간 갱신은 다른 게스트의 프로필과 보관 시각을 변경하지 않는다")
+  void renewalDoesNotChangeAnotherGuest() {
+    LocalDateTime now = LocalDateTime.now();
+    StoredGuest first = createStoredGuest("e".repeat(64), now, now.plusDays(30));
+    StoredGuest other = createStoredGuest("f".repeat(64), now, now.plusDays(30));
+
+    guestService.renewGuestExpiration(first.guestId());
+
+    assertThat(guestCount()).isEqualTo(2);
+    assertThat(findGuestByHash(other.authTokenHash())).isEqualTo(other);
+  }
+
+  @Test
+  @DisplayName("같은 토큰으로 재인증을 반복해도 같은 게스트와 저장된 설정을 유지하고 행을 늘리지 않는다")
+  void repeatedAuthenticationPreservesGuestAndSettings() {
+    String token = "1".repeat(64);
+    LocalDateTime previousVisit = LocalDateTime.now().minusDays(1);
+    StoredGuest original = createStoredGuest(
+        token, previousVisit, previousVisit.plusDays(30));
+    guestSettingService.initialize(guestRepository.findById(original.guestId()).orElseThrow());
+    jdbcTemplate.update("""
+        update guest_setting
+        set focus_minutes = 50, auto_transition = true, share_current_task = false,
+            end_sound_enabled = false, master_muted = true
+        where guest_id = ?
+        """, original.guestId());
+    StoredSettings originalSettings = findSettings(original.guestId());
+
+    assertThat(authService.validateToken(token)).isEqualTo(original.guestId());
+    assertThat(authService.validateToken(token)).isEqualTo(original.guestId());
+
+    assertThat(guestCount()).isEqualTo(1);
+    assertThat(settingCount()).isEqualTo(1);
+    assertThat(findSettings(original.guestId())).isEqualTo(originalSettings);
+    StoredGuest renewed = findGuestByHash(original.authTokenHash());
+    assertThat(renewed.guestId()).isEqualTo(original.guestId());
+    assertThat(renewed.nickname()).isEqualTo(original.nickname());
+    assertThat(renewed.characterType()).isEqualTo(original.characterType());
+    assertThat(renewed.drinkType()).isEqualTo(original.drinkType());
+    assertThat(renewed.expiresAt()).isAfter(LocalDateTime.now());
+  }
+
+  @Test
+  @DisplayName("만료된 토큰은 실제 DB에서도 거부하고 최근 방문과 만료 시각을 연장하지 않는다")
+  void expiredAuthenticationDoesNotRenewStoredGuest() {
+    String token = "2".repeat(64);
+    LocalDateTime expiresAt = LocalDateTime.now().minusSeconds(1);
+    StoredGuest original = createStoredGuest(token, expiresAt.minusDays(30), expiresAt);
+
+    assertThatThrownBy(() -> authService.validateToken(token))
+        .isInstanceOfSatisfying(ErrorException.class,
+            exception -> assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.EXPIRED_TOKEN));
+
+    assertThat(guestCount()).isEqualTo(1);
+    assertThat(findGuestByHash(original.authTokenHash())).isEqualTo(original);
+  }
+
+  @Test
+  @DisplayName("미등록 토큰의 인증 실패는 새 게스트나 설정을 생성하지 않는다")
+  void unregisteredAuthenticationDoesNotCreateRows() {
+    assertThatThrownBy(() -> authService.validateToken("3".repeat(64)))
+        .isInstanceOfSatisfying(ErrorException.class,
+            exception -> assertThat(exception.getErrorCode()).isEqualTo(ErrorCode.UNAUTHORIZED));
+
+    assertThat(guestCount()).isZero();
+    assertThat(settingCount()).isZero();
+  }
+
+  private StoredGuest createStoredGuest(
+      String token, LocalDateTime lastSeenAt, LocalDateTime expiresAt) {
+    Guest guest = Guest.create(null, "기존게스트", null);
+    String hash = sessionTokenGenerator.hashForLookup(token);
+    guest.assignToken(hash);
+    Guest savedGuest = guestRepository.saveAndFlush(guest);
+    jdbcTemplate.update("update guest set last_seen_at = ?, expires_at = ? where guest_id = ?",
+        lastSeenAt, expiresAt, savedGuest.getGuestId());
+    return findGuestByHash(hash);
+  }
+
+  private long settingCount() {
+    return jdbcTemplate.queryForObject("select count(*) from guest_setting", Long.class);
+  }
+
+  private StoredSettings findSettings(long guestId) {
+    return jdbcTemplate.queryForObject("""
+        select guest_id, focus_minutes, short_break_minutes, long_break_minutes,
+               auto_transition, share_current_task, preferred_work_pose,
+               end_sound_enabled, master_muted, created_at, last_modified_at
+        from guest_setting
+        where guest_id = ?
+        """, (resultSet, rowNumber) -> new StoredSettings(
+        resultSet.getLong("guest_id"),
+        resultSet.getInt("focus_minutes"),
+        resultSet.getInt("short_break_minutes"),
+        resultSet.getInt("long_break_minutes"),
+        resultSet.getBoolean("auto_transition"),
+        resultSet.getBoolean("share_current_task"),
+        resultSet.getString("preferred_work_pose"),
+        resultSet.getBoolean("end_sound_enabled"),
+        resultSet.getBoolean("master_muted"),
+        resultSet.getObject("created_at", LocalDateTime.class),
+        resultSet.getObject("last_modified_at", LocalDateTime.class)
+    ), guestId);
+  }
+
+  private void assertDefaultSettings(StoredSettings settings, long guestId) {
+    assertThat(settings.guestId()).isEqualTo(guestId);
+    assertThat(settings.focusMinutes()).isEqualTo(25);
+    assertThat(settings.shortBreakMinutes()).isEqualTo(5);
+    assertThat(settings.longBreakMinutes()).isEqualTo(15);
+    assertThat(settings.autoTransition()).isFalse();
+    assertThat(settings.shareCurrentTask()).isTrue();
+    assertThat(settings.preferredWorkPose()).isEqualTo("TYPING");
+    assertThat(settings.endSoundEnabled()).isTrue();
+    assertThat(settings.masterMuted()).isFalse();
+    assertThat(settings.createdAt()).isNotNull();
+    assertThat(settings.lastModifiedAt()).isNotNull();
   }
 
   private long guestCount() {
@@ -271,7 +468,22 @@ class GuestServiceH2IntegrationTest {
     try (Connection connection = dataSource.getConnection()) {
       assertThat(connection.getMetaData().getURL()).startsWith("jdbc:h2:mem:");
     }
+    guestSettingRepository.deleteAllInBatch();
     guestRepository.deleteAllInBatch();
+  }
+
+  private record StoredSettings(
+      long guestId,
+      int focusMinutes,
+      int shortBreakMinutes,
+      int longBreakMinutes,
+      boolean autoTransition,
+      boolean shareCurrentTask,
+      String preferredWorkPose,
+      boolean endSoundEnabled,
+      boolean masterMuted,
+      LocalDateTime createdAt,
+      LocalDateTime lastModifiedAt) {
   }
 
   private record StoredGuest(
