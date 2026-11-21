@@ -4,6 +4,8 @@ import kkagong.be.global.exception.ErrorCode;
 import kkagong.be.global.response.ApiResponse;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.security.access.hierarchicalroles.RoleHierarchy;
+import org.springframework.security.access.hierarchicalroles.RoleHierarchyImpl;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
@@ -15,6 +17,15 @@ import tools.jackson.databind.ObjectMapper;
 @Configuration
 public class SecurityConfig {
 
+
+  @Bean
+  public RoleHierarchy roleHierarchy(){
+    return RoleHierarchyImpl
+        .withDefaultRolePrefix()
+        .role("ADMIN").implies("MANAGER")
+        .role("MANAGER").implies("USER")
+        .build();
+  }
 
   @Bean
   SecurityFilterChain filterChain(HttpSecurity http, ObjectMapper objectMapper) throws Exception {
