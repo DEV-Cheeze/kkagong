@@ -4,9 +4,11 @@ import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.OneToOne;
 import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 import java.time.LocalDateTime;
@@ -32,6 +34,9 @@ public class Guest extends BaseEntity {
   @GeneratedValue(strategy = GenerationType.SEQUENCE, generator = "guestIdGenerator")
   @Column(name = "guestId")
   private Long guestId;
+
+  @OneToOne(fetch = FetchType.LAZY, mappedBy = "guest")
+  private GuestSetting guestSetting;
 
   @Column(name = "auth_token_hash", unique = true, nullable = false)
   private String authTokenHash;
