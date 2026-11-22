@@ -1,9 +1,12 @@
 package kkagong.be.global.security;
 
+import kkagong.be.domain.guest.service.AuthService;
 import kkagong.be.global.exception.ErrorCode;
 import kkagong.be.global.response.ApiResponse;
+import lombok.RequiredArgsConstructor;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.access.hierarchicalroles.RoleHierarchy;
 import org.springframework.security.access.hierarchicalroles.RoleHierarchyImpl;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
@@ -11,12 +14,18 @@ import org.springframework.security.config.annotation.web.configuration.EnableWe
 import org.springframework.security.config.annotation.web.configurers.AbstractHttpConfigurer;
 import org.springframework.security.config.http.SessionCreationPolicy;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.authentication.AnonymousAuthenticationFilter;
+import org.springframework.security.web.authentication.UsernamePasswordAuthenticationFilter;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import tools.jackson.databind.ObjectMapper;
 
 @EnableWebSecurity
 @Configuration
+@RequiredArgsConstructor
 public class SecurityConfig {
 
+  private final AuthService authService;
 
   @Bean
   public RoleHierarchy roleHierarchy(){
@@ -28,15 +37,19 @@ public class SecurityConfig {
   }
 
   @Bean
-  SecurityFilterChain filterChain(HttpSecurity http, ObjectMapper objectMapper) throws Exception {
+  SecurityFilterChain filterChain(HttpSecurity http, ObjectMapper objectMapper, AuthService authService)
+      throws Exception {
+
     http
         .cors(cors -> {})
         .csrf(AbstractHttpConfigurer::disable)
         .sessionManagement(sm -> sm.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
+        .addFilterBefore(new GuestAuthenticationFilter(authService), UsernamePasswordAuthenticationFilter.class)
+        .addFilterBefore(new ExceptionHandlerFilter(objectMapper), GuestAuthenticationFilter.class)
 
         .authorizeHttpRequests(auth -> auth
-            .requestMatchers("/**","/error", "/favicon.ico").permitAll()
-            .anyRequest().authenticated()
+            .requestMatchers(HttpMethod.POST, "/api/v1/guests/me").authenticated()
+            .anyRequest().permitAll()
         )
 
         .exceptionHandling(handling -> handling

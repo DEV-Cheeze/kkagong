@@ -374,8 +374,8 @@ class GuestServiceH2IntegrationTest {
   }
 
   @Test
-  @DisplayName("같은 토큰으로 재인증을 반복해도 같은 게스트와 저장된 설정을 유지하고 행을 늘리지 않는다")
-  void repeatedAuthenticationPreservesGuestAndSettings() {
+  @DisplayName("같은 토큰을 반복 검증해도 게스트의 방문·만료 시각과 저장된 설정을 유지한다")
+  void repeatedAuthenticationPreservesStoredGuestAndSettings() {
     String token = "1".repeat(64);
     LocalDateTime previousVisit = LocalDateTime.now().minusDays(1);
     StoredGuest original = createStoredGuest(
@@ -395,12 +395,7 @@ class GuestServiceH2IntegrationTest {
     assertThat(guestCount()).isEqualTo(1);
     assertThat(settingCount()).isEqualTo(1);
     assertThat(findSettings(original.guestId())).isEqualTo(originalSettings);
-    StoredGuest renewed = findGuestByHash(original.authTokenHash());
-    assertThat(renewed.guestId()).isEqualTo(original.guestId());
-    assertThat(renewed.nickname()).isEqualTo(original.nickname());
-    assertThat(renewed.characterType()).isEqualTo(original.characterType());
-    assertThat(renewed.drinkType()).isEqualTo(original.drinkType());
-    assertThat(renewed.expiresAt()).isAfter(LocalDateTime.now());
+    assertThat(findGuestByHash(original.authTokenHash())).isEqualTo(original);
   }
 
   @Test

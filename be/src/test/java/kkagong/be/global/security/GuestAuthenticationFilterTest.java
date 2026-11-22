@@ -55,7 +55,7 @@ class GuestAuthenticationFilterTest {
   void setUp() {
     SecurityContextHolder.clearContext();
     filter = new GuestAuthenticationFilter(authService);
-    request = new MockHttpServletRequest("GET", "/api/v1/guests/me");
+    request = new MockHttpServletRequest("POST", "/api/v1/guests/me");
     response = new MockHttpServletResponse();
   }
 

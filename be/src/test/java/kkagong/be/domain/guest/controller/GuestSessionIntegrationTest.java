@@ -1,0 +1,164 @@
+package kkagong.be.domain.guest.controller;
+
+import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
+
+import jakarta.servlet.http.Cookie;
+import java.time.LocalDateTime;
+import kkagong.be.global.exception.ErrorCode;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
+import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase.Replace;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
+import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.web.servlet.MockMvc;
+import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
+
+@SpringBootTest(properties = {
+    "spring.jpa.hibernate.ddl-auto=create-drop",
+    "spring.jpa.show-sql=false",
+    "spring.flyway.enabled=false"
+})
+@AutoConfigureTestDatabase(replace = Replace.ANY)
+@AutoConfigureMockMvc
+@ActiveProfiles("test")
+class GuestSessionIntegrationTest {
+
+  private static final String SIGNUP_URL = "/api/v1/guests/signup";
+  private static final String ME_URL = "/api/v1/guests/me";
+  private static final String COOKIE_NAME = "guestId";
+  private static final int THIRTY_DAYS_IN_SECONDS = 30 * 24 * 60 * 60;
+
+  @Autowired
+  private MockMvc mockMvc;
+
+  @Autowired
+  private JdbcTemplate jdbcTemplate;
+
+  @BeforeEach
+  void clearGuests() {
+    jdbcTemplate.update("delete from guest_setting");
+    jdbcTemplate.update("delete from guest");
+  }
+
+  @Test
+  void signupCookieRestoresTheSameGuestAndRenewsTheVisit() throws Exception {
+    Cookie session = signUp("재방문게스트");
+    Long guestId = guestIdOf("재방문게스트");
+    signUp("다른게스트");
+    Long otherGuestId = guestIdOf("다른게스트");
+    LocalDateTime previousVisit = LocalDateTime.now().minusDays(10).withNano(0);
+    jdbcTemplate.update("update guest set last_seen_at = ?, expires_at = ? where guest_id = ?",
+        previousVisit, previousVisit.plusDays(30), guestId);
+    jdbcTemplate.update("update guest_setting set focus_minutes = 45 where guest_id = ?", guestId);
+    Visit otherGuestVisit = visitOf(otherGuestId);
+
+    mockMvc.perform(post(ME_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.guestProfile.nickname").value("재방문게스트"))
+        .andExpect(jsonPath("$.data.guestSettings.focusMinutes").value(45))
+        .andExpect(cookie().value(COOKIE_NAME, session.getValue()))
+        .andExpect(cookie().maxAge(COOKIE_NAME, THIRTY_DAYS_IN_SECONDS));
+
+    mockMvc.perform(post(ME_URL).secure(true).cookie(session)
+            .param("guestId", otherGuestId.toString()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.guestProfile.nickname").value("재방문게스트"))
+        .andExpect(jsonPath("$.data.guestSettings.focusMinutes").value(45))
+        .andExpect(cookie().value(COOKIE_NAME, session.getValue()));
+
+    Visit renewed = visitOf(guestId);
+    assertThat(renewed.lastSeenAt()).isAfter(previousVisit);
+    assertThat(renewed.expiresAt()).isEqualTo(renewed.lastSeenAt().plusDays(30));
+    assertThat(guestIdOf("재방문게스트")).isEqualTo(guestId);
+    assertThat(visitOf(otherGuestId)).isEqualTo(otherGuestVisit);
+    assertThat(jdbcTemplate.queryForObject("select count(*) from guest", Long.class)).isEqualTo(2L);
+  }
+
+  @Test
+  void missingCookieReturnsUnauthorized() throws Exception {
+    expectUnauthorized(post(ME_URL).secure(true), ErrorCode.UNAUTHORIZED);
+  }
+
+  @Test
+  void alteredCookieIsRejectedWithoutRenewingTheVisit() throws Exception {
+    Cookie session = signUp("변조검증게스트");
+    Long guestId = guestIdOf("변조검증게스트");
+    Visit previousVisit = visitOf(guestId);
+    String token = session.getValue();
+    char replacement = token.charAt(0) == '0' ? '1' : '0';
+    Cookie alteredSession = new Cookie(COOKIE_NAME, replacement + token.substring(1));
+
+    expectUnauthorized(post(ME_URL).secure(true).cookie(alteredSession), ErrorCode.UNAUTHORIZED);
+
+    assertThat(visitOf(guestId)).isEqualTo(previousVisit);
+  }
+
+  @Test
+  void expiredCookieIsRejectedWithoutRenewingTheVisit() throws Exception {
+    Cookie session = signUp("만료검증게스트");
+    Long guestId = guestIdOf("만료검증게스트");
+    LocalDateTime expiredAt = LocalDateTime.now().minusDays(1).withNano(0);
+    jdbcTemplate.update("update guest set last_seen_at = ?, expires_at = ? where guest_id = ?",
+        expiredAt.minusDays(30), expiredAt, guestId);
+    Visit previousVisit = visitOf(guestId);
+
+    expectUnauthorized(post(ME_URL).secure(true).cookie(session), ErrorCode.EXPIRED_TOKEN);
+
+    assertThat(visitOf(guestId)).isEqualTo(previousVisit);
+  }
+
+  @Test
+  void signupRemainsPublicWithAnInvalidCookie() throws Exception {
+    mockMvc.perform(signupRequest("처음게스트").cookie(new Cookie(COOKIE_NAME, "invalid")))
+        .andExpect(status().isNoContent())
+        .andExpect(cookie().exists(COOKIE_NAME));
+  }
+
+  private Cookie signUp(String nickname) throws Exception {
+    return mockMvc.perform(signupRequest(nickname))
+        .andExpect(status().isNoContent())
+        .andExpect(cookie().exists(COOKIE_NAME))
+        .andReturn().getResponse().getCookie(COOKIE_NAME);
+  }
+
+  private MockHttpServletRequestBuilder signupRequest(String nickname) {
+    return post(SIGNUP_URL).secure(true)
+        .contentType(MediaType.APPLICATION_JSON)
+        .content("""
+            {"nickname":"%s"}
+            """.formatted(nickname));
+  }
+
+  private void expectUnauthorized(MockHttpServletRequestBuilder request, ErrorCode errorCode)
+      throws Exception {
+    mockMvc.perform(request)
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code").value(401))
+        .andExpect(jsonPath("$.message").value(errorCode.getMessage()))
+        .andExpect(jsonPath("$.data").doesNotExist())
+        .andExpect(cookie().doesNotExist(COOKIE_NAME));
+  }
+
+  private Long guestIdOf(String nickname) {
+    return jdbcTemplate.queryForObject("select guest_id from guest where nickname = ?",
+        Long.class, nickname);
+  }
+
+  private Visit visitOf(Long guestId) {
+    return jdbcTemplate.queryForObject("select last_seen_at, expires_at from guest where guest_id = ?",
+        (rs, rowNum) -> new Visit(rs.getObject("last_seen_at", LocalDateTime.class),
+            rs.getObject("expires_at", LocalDateTime.class)), guestId);
+  }
+
+  private record Visit(LocalDateTime lastSeenAt, LocalDateTime expiresAt) {
+  }
+}

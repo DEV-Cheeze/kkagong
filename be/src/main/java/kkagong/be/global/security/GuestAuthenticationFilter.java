@@ -7,14 +7,14 @@ import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
 import java.util.List;
-import kkagong.be.domain.guest.repository.GuestRepository;
 import kkagong.be.domain.guest.service.AuthService;
-import kkagong.be.global.exception.ErrorException;
 import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpMethod;
 import org.springframework.security.authentication.UsernamePasswordAuthenticationToken;
-import org.springframework.security.core.Authentication;
 import org.springframework.security.core.authority.SimpleGrantedAuthority;
 import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.web.servlet.util.matcher.PathPatternRequestMatcher;
+import org.springframework.security.web.util.matcher.RequestMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
 
 @RequiredArgsConstructor
@@ -22,6 +22,14 @@ public class GuestAuthenticationFilter extends OncePerRequestFilter {
 
   private static final String GUEST_TOKEN_COOKIE_NAME = "guestId";
   private final AuthService authService;
+  private final RequestMatcher excludedRequest = PathPatternRequestMatcher.withDefaults()
+      .matcher(HttpMethod.POST, "/api/v1/guests/signup");;
+
+
+  @Override
+  protected boolean shouldNotFilter(HttpServletRequest request) throws ServletException {
+    return excludedRequest.matches(request);
+  }
 
   @Override
   protected void doFilterInternal(
@@ -34,10 +42,6 @@ public class GuestAuthenticationFilter extends OncePerRequestFilter {
       filterChain.doFilter(request, response);
       return;
     }
-
-    // TODO: 토큰 형식, DB 해시 조회 결과, 만료 여부를 검증한다.
-    // TODO: 검증 성공 시 확정한 guestId로 Authentication을 만들고 SecurityContext에 등록한다.
-    // TODO: 인증 실패 시 오류 응답을 반환하고 다음 필터 호출을 중단한다.
 
     Long id = authService.validateToken(token);
 

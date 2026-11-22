@@ -32,7 +32,6 @@ public class AuthService {
       throw new ErrorException(ErrorCode.EXPIRED_TOKEN);
     }
 
-    guestService.renewGuestExpiration(guest.getGuestId());
     return guest.getGuestId();
   }
 }

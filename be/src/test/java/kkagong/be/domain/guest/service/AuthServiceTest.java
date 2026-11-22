@@ -3,7 +3,6 @@ package kkagong.be.domain.guest.service;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.Mockito.CALLS_REAL_METHODS;
-import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mockStatic;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -51,8 +50,8 @@ class AuthServiceTest {
 
   @ParameterizedTest
   @ValueSource(longs = {1, 86_400_000_000_000L})
-  @DisplayName("만료 전 토큰은 해시로 조회하고 기존 게스트 ID를 반환하며 보관 기간을 갱신한다")
-  void validTokenReturnsExistingGuestIdAndRenewsExpiration(long remainingNanos) {
+  @DisplayName("만료 전 토큰을 해시로 조회하고 기간 갱신 없이 기존 게스트 ID를 반환한다")
+  void validTokenReturnsExistingGuestIdWithoutRenewal(long remainingNanos) {
     stubStoredGuest(NOW.plusNanos(remainingNanos));
     when(guest.getGuestId()).thenReturn(GUEST_ID);
 
@@ -63,7 +62,7 @@ class AuthServiceTest {
     }
 
     verify(guestRepository).findByAuthTokenHash(TOKEN_HASH);
-    verify(guestService).renewGuestExpiration(GUEST_ID);
+    verifyNoInteractions(guestService);
   }
 
   @Test
@@ -119,22 +118,6 @@ class AuthServiceTest {
     assertThatThrownBy(() -> authService.validateToken(TOKEN)).isSameAs(failure);
 
     verifyNoInteractions(guestService);
-  }
-
-  @Test
-  @DisplayName("기간 갱신이 실패하면 인증 성공 ID를 반환하지 않고 예외를 전파한다")
-  void renewalFailurePreventsSuccessfulAuthentication() {
-    stubStoredGuest(NOW.plusDays(1));
-    when(guest.getGuestId()).thenReturn(GUEST_ID);
-    DataAccessResourceFailureException failure =
-        new DataAccessResourceFailureException("기간 갱신 실패");
-    doThrow(failure).when(guestService).renewGuestExpiration(GUEST_ID);
-
-    try (MockedStatic<LocalDateTime> time = mockStatic(LocalDateTime.class, CALLS_REAL_METHODS)) {
-      time.when(LocalDateTime::now).thenReturn(NOW);
-
-      assertThatThrownBy(() -> authService.validateToken(TOKEN)).isSameAs(failure);
-    }
   }
 
   private void stubStoredGuest(LocalDateTime expiresAt) {
