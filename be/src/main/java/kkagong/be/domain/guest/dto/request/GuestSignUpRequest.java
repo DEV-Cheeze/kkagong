@@ -16,7 +16,7 @@ public record GuestSignUpRequest(
 
   public GuestSignUpRequest {
     if (nickname != null) {
-      nickname = nickname.trim();
+      nickname = nickname.strip();
     }
   }
 }

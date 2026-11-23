@@ -79,8 +79,7 @@ public class Guest extends BaseEntity {
   public static Guest create(CharacterType characterType, String nickname, DrinkType drinkType){
 
     characterType = characterType != null ? characterType : CharacterType.Default_Male;
-    nickname = (nickname == null || nickname.isBlank()) ? "까공이" : nickname;
-    validateNickname(nickname);
+    nickname = (nickname == null || nickname.isBlank()) ? "까공이" : validateNickname(nickname);
     drinkType = drinkType != null ? drinkType : DrinkType.Americano_ICE;
 
     return Guest.builder()
@@ -94,10 +93,17 @@ public class Guest extends BaseEntity {
     this.authTokenHash = authTokenHash;
   }
 
-  private static void validateNickname(String nickname) {
+  private static String validateNickname(String nickname) {
     if (nickname.length() > 12) {
       throw new ErrorException(ErrorCode.NICKNAME_TOO_LONG);
     }
+    return nickname;
+  }
+
+  public void updateGuestInfo(CharacterType characterType, String nickname, DrinkType drinkType){
+    this.characterType = characterType != null ? characterType : this.characterType;
+    this.nickname = (nickname == null || nickname.isBlank()) ? this.nickname : validateNickname(nickname);
+    this.drinkType = drinkType != null ? drinkType : this.drinkType;
   }
 
   
