@@ -3,8 +3,13 @@ package kkagong.be.domain.guest.controller;
 import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
+import java.util.List;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
+import kkagong.be.domain.guest.dto.request.SoundSettingsRequest;
 import kkagong.be.domain.guest.dto.response.GuestMeResponse;
+import kkagong.be.domain.guest.dto.response.SoundInfoResponse;
+import kkagong.be.domain.guest.dto.response.SoundSettingsResponse;
+import kkagong.be.domain.guest.enums.SoundCodes;
 import kkagong.be.domain.guest.service.GuestService;
 import kkagong.be.global.exception.ErrorCode;
 import kkagong.be.global.exception.ErrorException;
@@ -13,6 +18,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.CookieValue;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -58,6 +66,26 @@ public class GuestController {
     cookie.setAttribute("SameSite", "Lax");
 
     response.addCookie(cookie);
+  }
+
+  @PatchMapping("/me/sound-settings/{soundCode}")
+  public ApiResponse<SoundSettingsResponse> soundSettings(
+      @AuthenticationPrincipal Long guestId,
+      @PathVariable SoundCodes soundCode,
+      @RequestBody @Valid SoundSettingsRequest request) {
+
+    SoundSettingsResponse response = guestService.updateSoundSettings(guestId, soundCode, request);
+
+    return ApiResponse.ok(response);
+  }
+
+  @GetMapping("/me/sound-settings")
+  public ApiResponse<List<SoundInfoResponse>> soundSettings(
+      @AuthenticationPrincipal Long guestId) {
+
+    List<SoundInfoResponse> response = guestService.getSoundInfo(guestId);
+
+    return ApiResponse.ok(response);
   }
 
 }

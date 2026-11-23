@@ -8,10 +8,13 @@ import jakarta.persistence.FetchType;
 import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
+import jakarta.persistence.OneToMany;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.SequenceGenerator;
 import jakarta.persistence.Table;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.List;
 import kkagong.be.domain.guest.enums.CharacterType;
 import kkagong.be.domain.guest.enums.DrinkType;
 import kkagong.be.global.entity.BaseEntity;
@@ -37,6 +40,9 @@ public class Guest extends BaseEntity {
 
   @OneToOne(fetch = FetchType.LAZY, mappedBy = "guest")
   private GuestSetting guestSetting;
+
+  @OneToMany(fetch = FetchType.LAZY, mappedBy = "guest")
+  private List<GuestSoundSetting> guestSoundSettings = new ArrayList<>();
 
   @Column(name = "auth_token_hash", unique = true, nullable = false)
   private String authTokenHash;
