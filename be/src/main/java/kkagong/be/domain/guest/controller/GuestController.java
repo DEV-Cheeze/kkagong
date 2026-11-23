@@ -4,7 +4,9 @@ import jakarta.servlet.http.Cookie;
 import jakarta.servlet.http.HttpServletResponse;
 import jakarta.validation.Valid;
 import java.util.List;
+import kkagong.be.domain.guest.dto.GuestProfile;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
+import kkagong.be.domain.guest.dto.request.ProfileUpdateRequest;
 import kkagong.be.domain.guest.dto.request.SoundSettingsRequest;
 import kkagong.be.domain.guest.dto.response.GuestMeResponse;
 import kkagong.be.domain.guest.dto.response.SoundInfoResponse;
@@ -57,15 +59,15 @@ public class GuestController {
     return ApiResponse.ok(guestMeResponse);
   }
 
-  private void addGuestCookie(HttpServletResponse response, String token) {
-    Cookie cookie = new Cookie(GUEST_TOKEN_COOKIE_NAME, token);
-    cookie.setMaxAge(30 * 24 * 60 * 60);
-    cookie.setPath("/");
-    cookie.setHttpOnly(true);
-    cookie.setSecure(true);
-    cookie.setAttribute("SameSite", "Lax");
+  @PatchMapping("/me/profile")
+  public ApiResponse<GuestProfile> updateProfile(
+      @AuthenticationPrincipal Long guestId,
+      @RequestBody @Valid ProfileUpdateRequest request
+  ){
 
-    response.addCookie(cookie);
+    GuestProfile response = guestService.updateGuestProfile(guestId, request);
+
+    return ApiResponse.ok(response);
   }
 
   @PatchMapping("/me/sound-settings/{soundCode}")
@@ -88,4 +90,14 @@ public class GuestController {
     return ApiResponse.ok(response);
   }
 
+  private void addGuestCookie(HttpServletResponse response, String token) {
+    Cookie cookie = new Cookie(GUEST_TOKEN_COOKIE_NAME, token);
+    cookie.setMaxAge(30 * 24 * 60 * 60);
+    cookie.setPath("/");
+    cookie.setHttpOnly(true);
+    cookie.setSecure(true);
+    cookie.setAttribute("SameSite", "Lax");
+
+    response.addCookie(cookie);
+  }
 }

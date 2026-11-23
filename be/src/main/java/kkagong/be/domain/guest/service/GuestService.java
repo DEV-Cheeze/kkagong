@@ -9,6 +9,7 @@ import java.util.stream.Collectors;
 import kkagong.be.domain.guest.dto.GuestProfile;
 import kkagong.be.domain.guest.dto.GuestSettings;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
+import kkagong.be.domain.guest.dto.request.ProfileUpdateRequest;
 import kkagong.be.domain.guest.dto.request.SoundSettingsRequest;
 import kkagong.be.domain.guest.dto.response.GuestMeResponse;
 import kkagong.be.domain.guest.dto.response.SoundInfoResponse;
@@ -115,5 +116,16 @@ public class GuestService {
 
     return Arrays.stream(SoundCodes.values()).map(a -> !guestSoundMap.containsKey(a) ? new SoundInfoResponse(a, 50, false) : guestSoundMap.get(a)).toList();
   }
+
+  @Transactional
+  public GuestProfile updateGuestProfile(Long guestId, ProfileUpdateRequest request){
+
+    Guest guest = guestRepository.findById(guestId).orElseThrow(() -> new ErrorException(ErrorCode.GUEST_NOT_FOUND));
+
+    guest.updateGuestInfo(request.characterType(), request.nickname(), request.drinkType());
+
+    return GuestProfile.from(guest);
+  }
+
 
 }

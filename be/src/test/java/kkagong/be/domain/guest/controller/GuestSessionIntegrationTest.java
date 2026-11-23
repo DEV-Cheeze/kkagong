@@ -1,6 +1,7 @@
 package kkagong.be.domain.guest.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
@@ -11,6 +12,8 @@ import java.time.LocalDateTime;
 import kkagong.be.global.exception.ErrorCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase.Replace;
@@ -34,6 +37,7 @@ class GuestSessionIntegrationTest {
 
   private static final String SIGNUP_URL = "/api/v1/guests/signup";
   private static final String ME_URL = "/api/v1/guests/me";
+  private static final String PROFILE_URL = ME_URL + "/profile";
   private static final String COOKIE_NAME = "guestId";
   private static final int THIRTY_DAYS_IN_SECONDS = 30 * 24 * 60 * 60;
 
@@ -47,6 +51,67 @@ class GuestSessionIntegrationTest {
   void clearGuests() {
     jdbcTemplate.update("delete from guest_setting");
     jdbcTemplate.update("delete from guest");
+  }
+
+  @Test
+  void profileChangesRemainVisibleWithTheSameCookie() throws Exception {
+    Cookie session = signUp("기존게스트");
+    Long guestId = guestIdOf("기존게스트");
+
+    mockMvc.perform(profilePatch("""
+            {"drinkType":"CafeLatte_ICE"}
+            """).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.nickname").value("기존게스트"))
+        .andExpect(jsonPath("$.data.drinkType").value("CafeLatte_ICE"));
+
+    mockMvc.perform(profilePatch("""
+            {"nickname":"\u3000123456789012 "}
+            """).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.nickname").value("123456789012"))
+        .andExpect(jsonPath("$.data.characterType").value("Default_Male"))
+        .andExpect(jsonPath("$.data.drinkType").value("CafeLatte_ICE"));
+
+    mockMvc.perform(post(ME_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.guestProfile.nickname").value("123456789012"))
+        .andExpect(jsonPath("$.data.guestProfile.characterType").value("Default_Male"))
+        .andExpect(jsonPath("$.data.guestProfile.drinkType").value("CafeLatte_ICE"));
+
+    assertThat(guestIdOf("123456789012")).isEqualTo(guestId);
+    assertThat(jdbcTemplate.queryForObject("select count(*) from guest", Long.class)).isEqualTo(1L);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"", " ", "\u3000", "1234567890123"})
+  void invalidNicknameDoesNotChangeTheStoredProfile(String nickname) throws Exception {
+    Cookie session = signUp("기존게스트");
+
+    mockMvc.perform(profilePatch("""
+            {"nickname":"%s","drinkType":"CafeLatte_ICE"}
+            """.formatted(nickname)).cookie(session))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value(400));
+
+    mockMvc.perform(post(ME_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.guestProfile.nickname").value("기존게스트"))
+        .andExpect(jsonPath("$.data.guestProfile.drinkType").value("Americano_ICE"));
+  }
+
+  @Test
+  void profilePatchRequiresGuestCookie() throws Exception {
+    expectUnauthorized(profilePatch("""
+        {"nickname":"까공"}
+        """), ErrorCode.UNAUTHORIZED);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {"", "\u3000"})
+  void signupStillDefaultsBlankNicknames(String nickname) throws Exception {
+    signUp(nickname);
+    assertThat(guestIdOf("까공이")).isNotNull();
   }
 
   @Test
@@ -121,6 +186,10 @@ class GuestSessionIntegrationTest {
     mockMvc.perform(signupRequest("처음게스트").cookie(new Cookie(COOKIE_NAME, "invalid")))
         .andExpect(status().isNoContent())
         .andExpect(cookie().exists(COOKIE_NAME));
+  }
+
+  private MockHttpServletRequestBuilder profilePatch(String body) {
+    return patch(PROFILE_URL).secure(true).contentType(MediaType.APPLICATION_JSON).content(body);
   }
 
   private Cookie signUp(String nickname) throws Exception {
