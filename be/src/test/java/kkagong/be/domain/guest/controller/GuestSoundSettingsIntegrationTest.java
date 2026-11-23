@@ -3,9 +3,11 @@ package kkagong.be.domain.guest.controller;
 import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.awaitility.Awaitility.await;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -45,7 +47,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 @ActiveProfiles("test")
 class GuestSoundSettingsIntegrationTest {
 
-  private static final String SETTINGS_URL = "/api/v1/guests/me/sound-settings/{soundCode}";
+  private static final String SETTINGS_URL = "/api/v1/guests/me/sound-settings";
   private static final String COOKIE_NAME = "guestId";
   private static final String KEYBOARD = "KEYBOARD";
 
@@ -63,6 +65,53 @@ class GuestSoundSettingsIntegrationTest {
     jdbcTemplate.update("delete from guest_sound_setting");
     jdbcTemplate.update("delete from guest_setting");
     jdbcTemplate.update("delete from guest");
+  }
+
+  @Test
+  void readsDefaultsWithoutCreatingSettings() throws Exception {
+    GuestSession session = signUp("기본조회게스트");
+
+    mockMvc.perform(get(SETTINGS_URL).secure(true).cookie(session.cookie()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.length()").value(3))
+        .andExpect(content().json("""
+            {"code": 200, "data": [
+              {"soundCodes": "KEYBOARD", "volume": 50, "enabled": false},
+              {"soundCodes": "CAFE", "volume": 50, "enabled": false},
+              {"soundCodes": "WRITING", "volume": 50, "enabled": false}
+            ]}
+            """));
+
+    assertThat(storedSettings()).isEmpty();
+  }
+
+  @Test
+  void readsPatchedSettingAndDefaultsForOtherSounds() throws Exception {
+    GuestSession session = signUp("설정복원게스트");
+    patchKeyboard(session, """
+        {"volume": 70, "enabled": true}
+        """).andExpect(status().isOk());
+
+    mockMvc.perform(get(SETTINGS_URL).secure(true).cookie(session.cookie()))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.length()").value(3))
+        .andExpect(content().json("""
+            {"code": 200, "data": [
+              {"soundCodes": "KEYBOARD", "volume": 70, "enabled": true},
+              {"soundCodes": "CAFE", "volume": 50, "enabled": false},
+              {"soundCodes": "WRITING", "volume": 50, "enabled": false}
+            ]}
+            """));
+
+    assertThat(storedSettings())
+        .containsExactly(new StoredSetting(session.guestId(), KEYBOARD, 70, true));
+  }
+
+  @Test
+  void requiresGuestCookieToReadSettings() throws Exception {
+    mockMvc.perform(get(SETTINGS_URL).secure(true))
+        .andExpect(status().isUnauthorized())
+        .andExpect(jsonPath("$.code").value(401));
   }
 
   @Test
@@ -262,7 +311,7 @@ class GuestSoundSettingsIntegrationTest {
   }
 
   private MockHttpServletRequestBuilder soundPatch(String soundCode, String body) {
-    return patch(SETTINGS_URL, soundCode).secure(true)
+    return patch(SETTINGS_URL + "/{soundCode}", soundCode).secure(true)
         .contentType(MediaType.APPLICATION_JSON)
         .content(body);
   }

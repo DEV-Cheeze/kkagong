@@ -2,11 +2,16 @@ package kkagong.be.domain.guest.service;
 
 import jakarta.transaction.Transactional;
 import java.time.LocalDateTime;
+import java.util.Arrays;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
 import kkagong.be.domain.guest.dto.GuestProfile;
 import kkagong.be.domain.guest.dto.GuestSettings;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
 import kkagong.be.domain.guest.dto.request.SoundSettingsRequest;
 import kkagong.be.domain.guest.dto.response.GuestMeResponse;
+import kkagong.be.domain.guest.dto.response.SoundInfoResponse;
 import kkagong.be.domain.guest.dto.response.SoundSettingsResponse;
 import kkagong.be.domain.guest.entity.Guest;
 import kkagong.be.domain.guest.entity.GuestSetting;
@@ -94,6 +99,21 @@ public class GuestService {
     }
 
     return new SoundSettingsResponse(code, soundSetting.getVolume(), soundSetting.isEnabled());
+  }
+
+  public List<SoundInfoResponse> getSoundInfo(Long guestId){
+
+    //db에 있는것만 조회하고 나머지는 default로 놓기
+    Map<SoundCodes, SoundInfoResponse> guestSoundMap = guestSoundSettingRepository.findAllByGuestId(guestId, List.of(SoundCodes.values()))
+        .stream()
+        .collect(
+            Collectors.toMap(
+                SoundInfoResponse::soundCodes,
+                b -> b
+            )
+        );
+
+    return Arrays.stream(SoundCodes.values()).map(a -> !guestSoundMap.containsKey(a) ? new SoundInfoResponse(a, 50, false) : guestSoundMap.get(a)).toList();
   }
 
 }

@@ -49,6 +49,7 @@ public class SecurityConfig {
 
         .authorizeHttpRequests(auth -> auth
             .requestMatchers(HttpMethod.POST, "/api/v1/guests/me").authenticated()
+            .requestMatchers(HttpMethod.GET, "/api/v1/guests/me/sound-settings").authenticated()
             .requestMatchers(HttpMethod.PATCH, "/api/v1/guests/me/sound-settings/{soundCode}").authenticated()
             .anyRequest().permitAll()
         )
