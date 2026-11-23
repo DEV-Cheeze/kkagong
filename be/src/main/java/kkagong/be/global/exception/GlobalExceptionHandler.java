@@ -14,6 +14,7 @@ import org.springframework.web.HttpMediaTypeNotSupportedException;
 import org.springframework.web.HttpRequestMethodNotSupportedException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
 import org.springframework.web.context.request.WebRequest;
 import org.springframework.web.method.annotation.HandlerMethodValidationException;
@@ -62,6 +63,16 @@ public class GlobalExceptionHandler{
   }
 
   //Handling Other Errors
+  @ExceptionHandler({
+      HttpMessageNotReadableException.class,
+      MethodArgumentTypeMismatchException.class
+  })
+  public ApiResponse<Void> handleInvalidRequest(HttpServletResponse response) {
+    ErrorCode errorCode = ErrorCode.INVALID_REQUEST;
+    response.setStatus(errorCode.getHttpStatus().value());
+    return ApiResponse.error(errorCode);
+  }
+
   @ExceptionHandler(Exception.class)
   public ApiResponse<Void> handleUnexpectedException(Exception exception, HttpServletResponse response) {
     log.error("처리하지 못한 요청 예외", exception);
@@ -70,10 +81,6 @@ public class GlobalExceptionHandler{
 
     if(exception instanceof HttpRequestMethodNotSupportedException e){
       httpStatus = HttpStatus.METHOD_NOT_ALLOWED;
-    }
-
-    if(exception instanceof HttpMessageNotReadableException e){
-      httpStatus = HttpStatus.BAD_REQUEST;
     }
 
     if(exception instanceof HttpMediaTypeNotSupportedException e){

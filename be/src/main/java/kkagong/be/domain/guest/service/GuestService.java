@@ -5,10 +5,16 @@ import java.time.LocalDateTime;
 import kkagong.be.domain.guest.dto.GuestProfile;
 import kkagong.be.domain.guest.dto.GuestSettings;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
+import kkagong.be.domain.guest.dto.request.SoundSettingsRequest;
 import kkagong.be.domain.guest.dto.response.GuestMeResponse;
+import kkagong.be.domain.guest.dto.response.SoundSettingsResponse;
 import kkagong.be.domain.guest.entity.Guest;
 import kkagong.be.domain.guest.entity.GuestSetting;
+import kkagong.be.domain.guest.entity.GuestSoundSetting;
+import kkagong.be.domain.guest.entity.id.GuestSoundSettingId;
+import kkagong.be.domain.guest.enums.SoundCodes;
 import kkagong.be.domain.guest.repository.GuestRepository;
+import kkagong.be.domain.guest.repository.GuestSoundSettingRepository;
 import kkagong.be.global.exception.ErrorCode;
 import kkagong.be.global.exception.ErrorException;
 import lombok.RequiredArgsConstructor;
@@ -21,6 +27,7 @@ public class GuestService {
   private final SessionTokenGenerator sessionTokenGenerator;
   private final GuestRepository guestRepository;
   private final GuestSettingService guestSettingService;
+  private final GuestSoundSettingRepository guestSoundSettingRepository;
 
   @Transactional
   public String guestSignUp(GuestSignUpRequest request){
@@ -64,6 +71,29 @@ public class GuestService {
     LocalDateTime now = LocalDateTime.now();
     guestRepository.renewGuestExpiration(guestId, now);
 
+  }
+
+  @Transactional
+  public SoundSettingsResponse updateSoundSettings(Long guestId, SoundCodes code, SoundSettingsRequest request){
+    if (request.volume() == null && request.enabled() == null) {
+      throw new ErrorException(ErrorCode.INVALID_REQUEST);
+    }
+
+    //동시성 제어를 위한 락 획득 (다른 탭에서 동시에 업데이트 할 수 있으므로)
+    Guest guest = guestSoundSettingRepository.getGuestForUpdate(guestId).orElseThrow(() -> new ErrorException(ErrorCode.GUEST_NOT_FOUND));
+
+    //DB에 있다면 업데이트, 아니면 insert (더티체킹)
+    GuestSoundSettingId id = new GuestSoundSettingId(guestId, code);
+    var isExists = guestSoundSettingRepository.findById(id);
+    GuestSoundSetting soundSetting = isExists.orElseGet(() -> new GuestSoundSetting(guest, code));
+
+    soundSetting.changeSetting(request.volume(), request.enabled());
+
+    if(isExists.isEmpty()){
+      guestSoundSettingRepository.save(soundSetting);
+    }
+
+    return new SoundSettingsResponse(code, soundSetting.getVolume(), soundSetting.isEnabled());
   }
 
 }
