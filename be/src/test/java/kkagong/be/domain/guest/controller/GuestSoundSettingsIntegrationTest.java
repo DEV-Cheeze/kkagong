@@ -73,12 +73,13 @@ class GuestSoundSettingsIntegrationTest {
 
     mockMvc.perform(get(SETTINGS_URL).secure(true).cookie(session.cookie()))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.length()").value(3))
+        .andExpect(jsonPath("$.data.length()").value(4))
         .andExpect(content().json("""
             {"code": 200, "data": [
               {"soundCodes": "KEYBOARD", "volume": 50, "enabled": false},
               {"soundCodes": "CAFE", "volume": 50, "enabled": false},
-              {"soundCodes": "WRITING", "volume": 50, "enabled": false}
+              {"soundCodes": "WRITING", "volume": 50, "enabled": false},
+              {"soundCodes": "OUTSIDE", "volume": 50, "enabled": false}
             ]}
             """));
 
@@ -94,12 +95,13 @@ class GuestSoundSettingsIntegrationTest {
 
     mockMvc.perform(get(SETTINGS_URL).secure(true).cookie(session.cookie()))
         .andExpect(status().isOk())
-        .andExpect(jsonPath("$.data.length()").value(3))
+        .andExpect(jsonPath("$.data.length()").value(4))
         .andExpect(content().json("""
             {"code": 200, "data": [
               {"soundCodes": "KEYBOARD", "volume": 70, "enabled": true},
               {"soundCodes": "CAFE", "volume": 50, "enabled": false},
-              {"soundCodes": "WRITING", "volume": 50, "enabled": false}
+              {"soundCodes": "WRITING", "volume": 50, "enabled": false},
+              {"soundCodes": "OUTSIDE", "volume": 50, "enabled": false}
             ]}
             """));
 

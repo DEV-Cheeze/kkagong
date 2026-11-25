@@ -4,11 +4,14 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import jakarta.servlet.http.Cookie;
 import java.time.LocalDateTime;
+import kkagong.be.domain.timer.entity.TimerState;
+import kkagong.be.domain.timer.service.InMemoryTimerStore;
 import kkagong.be.global.exception.ErrorCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -37,6 +40,7 @@ class GuestSessionIntegrationTest {
 
   private static final String SIGNUP_URL = "/api/v1/guests/signup";
   private static final String ME_URL = "/api/v1/guests/me";
+  private static final String TIMER_ACTIONS_URL = "/api/v1/timer/actions";
   private static final String PROFILE_URL = ME_URL + "/profile";
   private static final String COOKIE_NAME = "guestId";
   private static final int THIRTY_DAYS_IN_SECONDS = 30 * 24 * 60 * 60;
@@ -47,10 +51,71 @@ class GuestSessionIntegrationTest {
   @Autowired
   private JdbcTemplate jdbcTemplate;
 
+  @Autowired
+  private InMemoryTimerStore timerStore;
+
   @BeforeEach
   void clearGuests() {
     jdbcTemplate.update("delete from guest_setting");
     jdbcTemplate.update("delete from guest");
+  }
+
+  @Test
+  void timerActionsUseAuthenticatedGuestAndReturnTheActionResult() throws Exception {
+    Cookie session = signUp("타이머게스트");
+    Long guestId = guestIdOf("타이머게스트");
+    jdbcTemplate.update("update guest_setting set focus_minutes = 40 where guest_id = ?", guestId);
+
+    mockMvc.perform(timerActionRequest("""
+            {"action":"START"}
+            """).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(content().json("""
+            {"code":200,"message":"응답 성공","data":null}
+            """));
+
+    TimerState started = timerStore.find(guestId).orElseThrow();
+    assertThat(started.status()).isEqualTo(TimerState.Status.RUNNING);
+    assertThat(started.durationMs()).isEqualTo(40 * 60_000L);
+
+    for (String action : new String[] {"PAUSE", "RESUME", "STOP"}) {
+      mockMvc.perform(timerActionRequest("""
+              {"action":"%s","intervalId":"%s"}
+              """.formatted(action, started.intervalId())).cookie(session))
+          .andExpect(status().isOk())
+          .andExpect(content().json("""
+              {"code":200,"message":"응답 성공","data":null}
+              """));
+    }
+
+    TimerState stopped = timerStore.find(guestId).orElseThrow();
+    assertThat(stopped.status()).isEqualTo(TimerState.Status.READY);
+    assertThat(stopped.intervalId()).isNull();
+
+    mockMvc.perform(timerActionRequest("""
+            {"action":"STOP","intervalId":"%s"}
+            """.formatted(started.intervalId())).cookie(session))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.message").value(ErrorCode.TIMER_INTERVAL_MISMATCH.getMessage()));
+  }
+
+  @Test
+  void timerActionsRequireGuestCookie() throws Exception {
+    expectUnauthorized(timerActionRequest("""
+        {"action":"START"}
+        """), ErrorCode.UNAUTHORIZED);
+  }
+
+  @Test
+  void timerActionRejectsMalformedIntervalId() throws Exception {
+    Cookie session = signUp("구간검증게스트");
+
+    mockMvc.perform(timerActionRequest("""
+            {"action":"PAUSE","intervalId":"invalid"}
+            """).cookie(session))
+        .andExpect(status().isBadRequest());
+
+    assertThat(timerStore.find(guestIdOf("구간검증게스트"))).isEmpty();
   }
 
   @Test
@@ -186,6 +251,10 @@ class GuestSessionIntegrationTest {
     mockMvc.perform(signupRequest("처음게스트").cookie(new Cookie(COOKIE_NAME, "invalid")))
         .andExpect(status().isNoContent())
         .andExpect(cookie().exists(COOKIE_NAME));
+  }
+
+  private MockHttpServletRequestBuilder timerActionRequest(String body) {
+    return post(TIMER_ACTIONS_URL).secure(true).contentType(MediaType.APPLICATION_JSON).content(body);
   }
 
   private MockHttpServletRequestBuilder profilePatch(String body) {
