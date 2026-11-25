@@ -23,9 +23,9 @@ public class InMemoryTimerStore {
         Objects.requireNonNull(change.apply(Optional.ofNullable(current))));
   }
 
-  public void updateIfPresent(Long guestId, UnaryOperator<TimerState> change) {
-    states.computeIfPresent(guestId, (id, current) ->
-        Objects.requireNonNull(change.apply(current)));
+  public Optional<TimerState> updateIfPresent(Long guestId, UnaryOperator<TimerState> change) {
+    return Optional.ofNullable(states.computeIfPresent(guestId, (id, current) ->
+        Objects.requireNonNull(change.apply(current))));
   }
 
 }

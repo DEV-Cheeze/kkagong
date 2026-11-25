@@ -8,7 +8,9 @@ import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import kkagong.be.domain.guest.repository.GuestSettingRepository;
 import kkagong.be.domain.timer.dto.request.TimerActionRequest;
+import kkagong.be.domain.timer.dto.response.TimerInfoResponse;
 import kkagong.be.domain.timer.entity.TimerState;
+import kkagong.be.domain.timer.entity.TimerState.Phase;
 import kkagong.be.domain.timer.entity.TimerState.Status;
 import kkagong.be.domain.timer.enums.TimerAction;
 import kkagong.be.global.exception.ErrorCode;
@@ -44,16 +46,7 @@ public class TimerService {
     UUID newIntervalId = UUID.randomUUID();
 
     TimerState start = inMemoryTimerStore.update(guestId, current -> {
-      TimerState state = current.orElseGet(() -> {
-
-        Integer focusMinutes = guestSettingRepository.getFocusMinutes(guestId);
-        long focusDurationMs = focusMinutes * 60_000L;
-
-        return new TimerState(
-            null, TimerState.Phase.FOCUS, TimerState.Status.READY,
-            focusDurationMs, null, null, null
-        );
-      });
+      TimerState state = current.orElseGet(() -> readyFocus(guestId));
 
       Instant now = clock.instant();
       if (state.status() == Status.RUNNING && !now.isBefore(state.endsAt())) {
@@ -215,6 +208,29 @@ public class TimerService {
     if (intervalExpired.get()) {
       throw new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH);
     }
+  }
+
+  public TimerInfoResponse getTimerInfo(Long guestId) {
+    Instant now = clock.instant();
+
+    TimerState state = inMemoryTimerStore
+        .updateIfPresent(guestId, current -> {
+          if (current.status() != Status.RUNNING || now.isBefore(current.endsAt())) {
+            return current;
+          }
+
+          TimerState next = taskService.nextAfterNaturalEnd(current);
+          taskManager.cancelEndTask(guestId);
+          return next;
+        })
+        .orElseGet(() -> readyFocus(guestId));
+
+    return TimerInfoResponse.from(state, now);
+  }
+
+  private TimerState readyFocus(Long guestId) {
+    long durationMs = guestSettingRepository.getFocusMinutes(guestId) * 60_000L;
+    return new TimerState(null, Phase.FOCUS, Status.READY, durationMs, null, null, null);
   }
 
 }

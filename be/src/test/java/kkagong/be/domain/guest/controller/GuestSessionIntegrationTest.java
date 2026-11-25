@@ -1,6 +1,7 @@
 package kkagong.be.domain.guest.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
@@ -9,7 +10,9 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import jakarta.servlet.http.Cookie;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.UUID;
 import kkagong.be.domain.timer.entity.TimerState;
 import kkagong.be.domain.timer.service.InMemoryTimerStore;
 import kkagong.be.global.exception.ErrorCode;
@@ -40,7 +43,8 @@ class GuestSessionIntegrationTest {
 
   private static final String SIGNUP_URL = "/api/v1/guests/signup";
   private static final String ME_URL = "/api/v1/guests/me";
-  private static final String TIMER_ACTIONS_URL = "/api/v1/timer/actions";
+  private static final String TIMER_URL = "/api/v1/timer";
+  private static final String TIMER_ACTIONS_URL = TIMER_URL + "/actions";
   private static final String PROFILE_URL = ME_URL + "/profile";
   private static final String COOKIE_NAME = "guestId";
   private static final int THIRTY_DAYS_IN_SECONDS = 30 * 24 * 60 * 60;
@@ -116,6 +120,72 @@ class GuestSessionIntegrationTest {
         .andExpect(status().isBadRequest());
 
     assertThat(timerStore.find(guestIdOf("구간검증게스트"))).isEmpty();
+  }
+
+  @Test
+  void timerQueryReturnsReadyWithConfiguredFocusDuration() throws Exception {
+    Cookie session = signUp("타이머초기조회");
+    Long guestId = guestIdOf("타이머초기조회");
+    jdbcTemplate.update("update guest_setting set focus_minutes = 40 where guest_id = ?", guestId);
+    assertThat(timerStore.find(guestId)).isEmpty();
+
+    mockMvc.perform(get(TIMER_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.phase").value("FOCUS"))
+        .andExpect(jsonPath("$.data.status").value("READY"))
+        .andExpect(jsonPath("$.data.durationMs").value(40 * 60_000L))
+        .andExpect(jsonPath("$.data.serverNow").exists())
+        .andExpect(jsonPath("$.data.intervalId").doesNotExist())
+        .andExpect(jsonPath("$.data.endsAt").doesNotExist())
+        .andExpect(jsonPath("$.data.remainingMs").doesNotExist());
+
+    assertThat(timerStore.find(guestId)).isEmpty();
+  }
+
+  @Test
+  void timerQueryRestoresPausedRemainingTime() throws Exception {
+    Cookie session = signUp("일시정지게스트");
+    Long guestId = guestIdOf("일시정지게스트");
+    UUID intervalId = UUID.randomUUID();
+    long durationMs = 25 * 60_000L;
+    long remainingMs = 17 * 60_000L + 24_000L;
+    TimerState paused = new TimerState(intervalId, TimerState.Phase.FOCUS, TimerState.Status.PAUSED,
+        durationMs, null, null, remainingMs);
+    timerStore.update(guestId, current -> paused);
+
+    mockMvc.perform(get(TIMER_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.intervalId").value(intervalId.toString()))
+        .andExpect(jsonPath("$.data.phase").value("FOCUS"))
+        .andExpect(jsonPath("$.data.status").value("PAUSED"))
+        .andExpect(jsonPath("$.data.durationMs").value(durationMs))
+        .andExpect(jsonPath("$.data.remainingMs").value(remainingMs))
+        .andExpect(jsonPath("$.data.endsAt").doesNotExist());
+
+    assertThat(timerStore.find(guestId)).contains(paused);
+  }
+
+  @Test
+  void timerQueryFinishesExpiredRunningInterval() throws Exception {
+    Cookie session = signUp("만료조회게스트");
+    Long guestId = guestIdOf("만료조회게스트");
+    Instant endsAt = Instant.now().minusSeconds(60);
+    long durationMs = 25 * 60_000L;
+    // 종료 예약 작업이 실행되기 전에 조회한 상황을 재현한다.
+    timerStore.update(guestId, current -> new TimerState(UUID.randomUUID(), TimerState.Phase.FOCUS,
+        TimerState.Status.RUNNING, durationMs, endsAt.minusMillis(durationMs), endsAt, null));
+
+    mockMvc.perform(get(TIMER_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.phase").value("SHORT_BREAK"))
+        .andExpect(jsonPath("$.data.status").value("READY"))
+        .andExpect(jsonPath("$.data.durationMs").value(5 * 60_000L))
+        .andExpect(jsonPath("$.data.intervalId").doesNotExist())
+        .andExpect(jsonPath("$.data.endsAt").doesNotExist())
+        .andExpect(jsonPath("$.data.remainingMs").doesNotExist());
+
+    assertThat(timerStore.find(guestId)).contains(new TimerState(null, TimerState.Phase.SHORT_BREAK,
+        TimerState.Status.READY, 5 * 60_000L, null, null, null));
   }
 
   @Test

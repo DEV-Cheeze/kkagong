@@ -2,10 +2,12 @@ package kkagong.be.domain.timer.controller;
 
 import jakarta.validation.Valid;
 import kkagong.be.domain.timer.dto.request.TimerActionRequest;
+import kkagong.be.domain.timer.dto.response.TimerInfoResponse;
 import kkagong.be.domain.timer.service.TimerService;
 import kkagong.be.global.response.ApiResponse;
 import lombok.RequiredArgsConstructor;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -28,5 +30,13 @@ public class TimerController {
     return ApiResponse.ok_noContent();
   }
 
+
+  @GetMapping
+  public ApiResponse<TimerInfoResponse> getTimer(@AuthenticationPrincipal Long guestId) {
+
+    TimerInfoResponse response = timerService.getTimerInfo(guestId);
+
+    return ApiResponse.ok(response);
+  }
 
 }

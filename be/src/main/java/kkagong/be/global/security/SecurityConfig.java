@@ -53,6 +53,7 @@ public class SecurityConfig {
             .requestMatchers(HttpMethod.PATCH, "/api/v1/guests/me/sound-settings/{soundCode}").authenticated()
             .requestMatchers(HttpMethod.PATCH, "/api/v1/guests/me/profile").authenticated()
             .requestMatchers(HttpMethod.POST, "/api/v1/timer/actions").authenticated()
+            .requestMatchers(HttpMethod.GET, "/api/v1/timer").authenticated()
             .anyRequest().permitAll()
         )
 
