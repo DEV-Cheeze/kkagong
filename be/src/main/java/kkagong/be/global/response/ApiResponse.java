@@ -14,6 +14,10 @@ public record ApiResponse<T>(
     return new ApiResponse<>(HttpStatus.OK.value(), "응답 성공", data);
   }
 
+  public static ApiResponse<Void> ok_noContent(){
+    return new ApiResponse<>(HttpStatus.OK.value(), "응답 성공", null);
+  }
+
   public static <T> ApiResponse<T> create(T data) {
     return new ApiResponse<>(HttpStatus.CREATED.value(), "생성 성공", data);
   }

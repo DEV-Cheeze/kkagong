@@ -4,6 +4,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 import java.util.stream.Stream;
+import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
 import kkagong.be.domain.guest.enums.CharacterType;
 import kkagong.be.domain.guest.enums.DrinkType;
 import kkagong.be.global.exception.ErrorCode;
@@ -92,9 +93,11 @@ class GuestTest {
   @ParameterizedTest(name = "{0}")
   @MethodSource("validNicknames")
   @DisplayName("닉네임은 앞뒤 공백을 제거한 뒤 1~12자를 허용하고 내부 공백은 유지한다")
-  void nicknameIsValidatedAfterTrimming(
+  void nicknameIsValidatedAfterSignupRequestNormalization(
       String scenario, String nickname, String expectedNickname) {
-    Guest guest = Guest.create(CharacterType.Default_Male, nickname, DrinkType.Americano_ICE);
+    GuestSignUpRequest request = new GuestSignUpRequest(
+        nickname, CharacterType.Default_Male, DrinkType.Americano_ICE);
+    Guest guest = Guest.create(request.characterType(), request.nickname(), request.drinkType());
 
     assertThat(guest.getNickname()).isEqualTo(expectedNickname);
   }
@@ -115,8 +118,11 @@ class GuestTest {
   @ValueSource(strings = {"1234567890123", " 1234567890123 "})
   @DisplayName("앞뒤 공백을 제거한 뒤에도 13자인 닉네임은 거부한다")
   void nicknameLongerThan12AfterTrimmingIsRejected(String nickname) {
+    GuestSignUpRequest request = new GuestSignUpRequest(
+        nickname, CharacterType.Default_Male, DrinkType.Americano_ICE);
+
     assertThatThrownBy(() ->
-        Guest.create(CharacterType.Default_Male, nickname, DrinkType.Americano_ICE))
+        Guest.create(request.characterType(), request.nickname(), request.drinkType()))
         .isInstanceOfSatisfying(ErrorException.class,
             exception -> assertThat(exception.getErrorCode())
                 .isEqualTo(ErrorCode.NICKNAME_TOO_LONG));

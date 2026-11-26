@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>개인 타이머 STOMP 테스트</title>
+  <style>
+    body { max-width: 65rem; margin: 2rem auto; padding: 0 1rem; font-family: system-ui, sans-serif; color: #172134; }
+    h1 { margin-bottom: 0.5rem; font-size: 1.75rem; }
+    h2 { margin: 0; font-size: 1.1rem; }
+    p { line-height: 1.5; }
+    .controls { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+    button { padding: 0.5rem 0.75rem; font: inherit; }
+    .logs { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr)); gap: 1rem; margin-top: 1rem; }
+    section { min-width: 0; padding: 1rem; border: 1px solid #ccd5e1; border-radius: 0.5rem; }
+    pre { height: 19rem; margin: 0.75rem 0 0; padding: 0.75rem; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; background: #f3f6f9; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>개인 타이머 STOMP 테스트</h1>
+  <p>게스트 쿠키가 필요하면 한 탭에서만 테스트 게스트를 생성하세요. 같은 브라우저의 두 탭에서 연결한 뒤 한 탭에서 START를 누르세요.</p>
+  <div class="controls">
+    <button id="signup" disabled>테스트 게스트 생성</button>
+    <button id="connect" disabled>연결 및 구독</button>
+    <a href="timer-stomp-test.html" target="_blank" rel="noopener">두 번째 탭 열기</a>
+  </div>
+  <p id="connection-status" role="status">연결 대기</p>
+  <p aria-live="polite">현재 타이머 상태 <strong id="timer-status">조회 전</strong></p>
+  <div class="controls">
+    <button id="lookup" disabled>GET 조회</button>
+    <button id="start" data-requires-connection disabled>START</button>
+    <button id="repeat-start" data-requires-connection disabled>같은 구간 START</button>
+    <button id="pause" data-requires-connection disabled>PAUSE</button>
+    <button id="resume" data-requires-connection disabled>RESUME</button>
+    <button id="stop" data-requires-connection disabled>STOP</button>
+    <button id="send-test" data-requires-connection disabled>STOMP 시험 전송</button>
+  </div>
+  <p>한 탭에서 START → PAUSE → RESUME을 누르면 두 탭이 같은 구간 ID로 RUNNING → PAUSED → RUNNING을 각각 수신해야 합니다.</p>
+  <div class="logs">
+    <section aria-labelledby="http-heading">
+      <h2 id="http-heading">HTTP 응답</h2>
+      <pre id="http-log" role="log"></pre>
+    </section>
+    <section aria-labelledby="stomp-heading">
+      <h2 id="stomp-heading">STOMP 수신</h2>
+      <p>TIMER_STATE_CHANGED 수신 <strong id="event-count">0</strong>회</p>
+      <pre id="stomp-log" role="log"></pre>
+    </section>
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/@stomp/stompjs@7.2.0/bundles/stomp.umd.min.js"></script>
+<script>
+  function setupTimerTest() {
+    const timerUrl = "/api/v1/timer";
+    const subscription = "/user/queue/timer";
+    const connectionStatus = document.getElementById("connection-status");
+    const signupButton = document.getElementById("signup");
+    const connectButton = document.getElementById("connect");
+    const lookupButton = document.getElementById("lookup");
+    const timerButtons = document.querySelectorAll("[data-requires-connection]");
+    const httpLog = document.getElementById("http-log");
+    const stompLog = document.getElementById("stomp-log");
+    const eventCount = document.getElementById("event-count");
+    const timerStatus = document.getElementById("timer-status");
+    let requestPending = false;
+    let stateEventCount = 0;
+
+    const wsScheme = location.protocol === "https:" ? "wss:" : "ws:";
+    const client = new StompJs.Client({
+      brokerURL: `${wsScheme}//${location.host}/ws-stomp`,
+      reconnectDelay: 0,
+      onConnect: () => {
+        client.subscribe(subscription, logTimerEvent);
+        connectionStatus.textContent = `연결됨 · ${subscription} 구독 요청 전송`;
+        void runHttp(refreshTimerStatus);
+      },
+      onStompError: (frame) => appendLog(stompLog, "STOMP 오류", frame.body || frame.headers.message),
+      onWebSocketClose: () => {
+        connectionStatus.textContent = "연결 종료 · 게스트 쿠키와 /ws-stomp 응답을 확인하세요.";
+        void client.deactivate().then(updateButtons);
+      }
+    });
+
+    function updateButtons() {
+      signupButton.disabled = requestPending || client.active;
+      connectButton.disabled = requestPending || client.active;
+      lookupButton.disabled = requestPending;
+      for (const button of timerButtons) {
+        button.disabled = requestPending || !client.connected;
+      }
+    }
+
+    function appendLog(output, label, details = "") {
+      const time = new Date().toLocaleTimeString("ko-KR");
+      const entry = `[${time}] ${label}\n${details}\n\n`;
+      output.append(document.createTextNode(entry));
+      output.scrollTop = output.scrollHeight;
+    }
+
+    function logTimerEvent(frame) {
+      let event;
+      try {
+        event = JSON.parse(frame.body);
+      } catch {
+        appendLog(stompLog, "STOMP 메시지", frame.body);
+        return;
+      }
+
+      if (event?.type === "TIMER_STATE_CHANGED") {
+        stateEventCount += 1;
+        eventCount.textContent = stateEventCount;
+        timerStatus.textContent = event.data.status;
+      }
+      appendLog(stompLog, event?.type ?? "STOMP 메시지", JSON.stringify(event, null, 2));
+    }
+
+    async function runHttp(task) {
+      if (requestPending) return;
+
+      requestPending = true;
+      updateButtons();
+      try {
+        await task();
+      } catch (error) {
+        appendLog(httpLog, "HTTP 요청 오류", error.message);
+      } finally {
+        requestPending = false;
+        updateButtons();
+      }
+    }
+
+    async function request(method, path, body) {
+      const options = { method, credentials: "same-origin", cache: "no-store" };
+      let requestBody = "";
+      if (body !== undefined) {
+        requestBody = JSON.stringify(body);
+        options.headers = { "Content-Type": "application/json" };
+        options.body = requestBody;
+      }
+
+      const response = await fetch(path, options);
+      const text = await response.text();
+      const requestLabel = requestBody ? `${method} ${path} ${requestBody}` : `${method} ${path}`;
+      appendLog(httpLog, `${requestLabel} → ${response.status}`, text || "빈 본문");
+      return response.ok && text ? JSON.parse(text) : null;
+    }
+
+    async function refreshTimerStatus() {
+      const eventsAtRequest = stateEventCount;
+      const snapshot = await request("GET", timerUrl);
+      if (!snapshot?.data?.status) return;
+
+      if (stateEventCount !== eventsAtRequest) {
+        appendLog(httpLog, "조회 중 STOMP 통지를 받아 GET 상태 반영을 건너뜀");
+        return;
+      }
+      timerStatus.textContent = snapshot.data.status;
+    }
+
+    function sendAction(action, intervalId) {
+      return request("POST", `${timerUrl}/actions`, { action, intervalId });
+    }
+
+    async function sendActionForCurrentInterval(action) {
+      const snapshot = await request("GET", timerUrl);
+      if (!snapshot) return;
+
+      const intervalId = snapshot.data?.intervalId;
+      if (!intervalId) {
+        appendLog(httpLog, "현재 구간 없음");
+        return;
+      }
+      await sendAction(action, intervalId);
+    }
+
+    signupButton.onclick = () => runHttp(() => request("POST", "/api/v1/guests/signup", {}));
+    connectButton.onclick = () => {
+      connectionStatus.textContent = "연결 중";
+      client.activate();
+      updateButtons();
+    };
+    lookupButton.onclick = () => runHttp(refreshTimerStatus);
+    document.getElementById("start").onclick = () => runHttp(() => sendAction("START"));
+    document.getElementById("repeat-start").onclick = () => runHttp(() => sendActionForCurrentInterval("START"));
+    document.getElementById("pause").onclick = () => runHttp(() => sendActionForCurrentInterval("PAUSE"));
+    document.getElementById("resume").onclick = () => runHttp(() => sendActionForCurrentInterval("RESUME"));
+    document.getElementById("stop").onclick = () => runHttp(() => sendActionForCurrentInterval("STOP"));
+    document.getElementById("send-test").onclick = () => {
+      client.publish({ destination: "/app/timer/test", body: "" });
+    };
+    updateButtons();
+  }
+
+  if (globalThis.StompJs) {
+    setupTimerTest();
+  } else {
+    document.getElementById("connection-status").textContent = "STOMP.js를 불러오지 못했습니다.";
+  }
+</script>
+</body>
+</html>

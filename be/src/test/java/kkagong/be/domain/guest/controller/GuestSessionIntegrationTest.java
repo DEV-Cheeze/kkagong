@@ -1,18 +1,29 @@
 package kkagong.be.domain.guest.controller;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.mockito.Mockito.verify;
+import static org.mockito.Mockito.verifyNoMoreInteractions;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.get;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.patch;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.cookie;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.content;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
 import jakarta.servlet.http.Cookie;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.UUID;
+import kkagong.be.domain.timer.entity.TimerState;
+import kkagong.be.domain.timer.enums.TimerAction;
+import kkagong.be.domain.timer.service.InMemoryTimerStore;
+import kkagong.be.domain.timer.service.TimerStatePublisher;
 import kkagong.be.global.exception.ErrorCode;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.EnumSource;
 import org.junit.jupiter.params.provider.ValueSource;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.jdbc.test.autoconfigure.AutoConfigureTestDatabase;
@@ -22,6 +33,7 @@ import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.http.MediaType;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.request.MockHttpServletRequestBuilder;
 
@@ -37,6 +49,8 @@ class GuestSessionIntegrationTest {
 
   private static final String SIGNUP_URL = "/api/v1/guests/signup";
   private static final String ME_URL = "/api/v1/guests/me";
+  private static final String TIMER_URL = "/api/v1/timer";
+  private static final String TIMER_ACTIONS_URL = TIMER_URL + "/actions";
   private static final String PROFILE_URL = ME_URL + "/profile";
   private static final String COOKIE_NAME = "guestId";
   private static final int THIRTY_DAYS_IN_SECONDS = 30 * 24 * 60 * 60;
@@ -47,10 +61,165 @@ class GuestSessionIntegrationTest {
   @Autowired
   private JdbcTemplate jdbcTemplate;
 
+  @Autowired
+  private InMemoryTimerStore timerStore;
+
+  @MockitoBean
+  private TimerStatePublisher publisher;
+
   @BeforeEach
   void clearGuests() {
     jdbcTemplate.update("delete from guest_setting");
     jdbcTemplate.update("delete from guest");
+  }
+
+  @Test
+  void timerActionsUseAuthenticatedGuestAndReturnTheActionResult() throws Exception {
+    Cookie session = signUp("타이머게스트");
+    Long guestId = guestIdOf("타이머게스트");
+    jdbcTemplate.update("update guest_setting set focus_minutes = 40 where guest_id = ?", guestId);
+
+    mockMvc.perform(timerActionRequest("""
+            {"action":"START"}
+            """).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(content().json("""
+            {"code":200,"message":"응답 성공","data":null}
+            """));
+
+    TimerState started = timerStore.find(guestId).orElseThrow();
+    assertThat(started.status()).isEqualTo(TimerState.Status.RUNNING);
+    assertThat(started.durationMs()).isEqualTo(40 * 60_000L);
+
+    for (String action : new String[] {"PAUSE", "RESUME", "STOP"}) {
+      mockMvc.perform(timerActionRequest("""
+              {"action":"%s","intervalId":"%s"}
+              """.formatted(action, started.intervalId())).cookie(session))
+          .andExpect(status().isOk())
+          .andExpect(content().json("""
+              {"code":200,"message":"응답 성공","data":null}
+              """));
+    }
+
+    TimerState stopped = timerStore.find(guestId).orElseThrow();
+    assertThat(stopped.status()).isEqualTo(TimerState.Status.READY);
+    assertThat(stopped.intervalId()).isNull();
+
+    mockMvc.perform(timerActionRequest("""
+            {"action":"STOP","intervalId":"%s"}
+            """.formatted(started.intervalId())).cookie(session))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.message").value(ErrorCode.TIMER_INTERVAL_MISMATCH.getMessage()));
+  }
+
+  @Test
+  void timerActionsRequireGuestCookie() throws Exception {
+    expectUnauthorized(timerActionRequest("""
+        {"action":"START"}
+        """), ErrorCode.UNAUTHORIZED);
+  }
+
+  @Test
+  void timerActionRejectsMalformedIntervalId() throws Exception {
+    Cookie session = signUp("구간검증게스트");
+
+    mockMvc.perform(timerActionRequest("""
+            {"action":"PAUSE","intervalId":"invalid"}
+            """).cookie(session))
+        .andExpect(status().isBadRequest());
+
+    assertThat(timerStore.find(guestIdOf("구간검증게스트"))).isEmpty();
+  }
+
+  @ParameterizedTest
+  @EnumSource(TimerAction.class)
+  void expiredTimerActionReturnsConflictAndPublishesReadyOnce(TimerAction action) throws Exception {
+    Cookie session = signUp("만료조작게스트");
+    Long guestId = guestIdOf("만료조작게스트");
+    TimerState expired = storeExpiredFocus(guestId);
+
+    mockMvc.perform(timerActionRequest("""
+            {"action":"%s","intervalId":"%s"}
+            """.formatted(action, expired.intervalId())).cookie(session))
+        .andExpect(status().isConflict())
+        .andExpect(jsonPath("$.message").value(ErrorCode.TIMER_INTERVAL_MISMATCH.getMessage()));
+
+    TimerState ready = timerStore.find(guestId).orElseThrow();
+    assertThat(ready.status()).isEqualTo(TimerState.Status.READY);
+    assertThat(ready.phase()).isEqualTo(TimerState.Phase.SHORT_BREAK);
+    verify(publisher).publishReady(guestId, ready);
+    verifyNoMoreInteractions(publisher);
+  }
+
+  @Test
+  void timerQueryReturnsReadyWithConfiguredFocusDuration() throws Exception {
+    Cookie session = signUp("타이머초기조회");
+    Long guestId = guestIdOf("타이머초기조회");
+    jdbcTemplate.update("update guest_setting set focus_minutes = 40 where guest_id = ?", guestId);
+    assertThat(timerStore.find(guestId)).isEmpty();
+
+    mockMvc.perform(get(TIMER_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.phase").value("FOCUS"))
+        .andExpect(jsonPath("$.data.status").value("READY"))
+        .andExpect(jsonPath("$.data.durationMs").value(40 * 60_000L))
+        .andExpect(jsonPath("$.data.serverNow").exists())
+        .andExpect(jsonPath("$.data.intervalId").doesNotExist())
+        .andExpect(jsonPath("$.data.endsAt").doesNotExist())
+        .andExpect(jsonPath("$.data.remainingMs").doesNotExist());
+
+    assertThat(timerStore.find(guestId)).isEmpty();
+  }
+
+  @Test
+  void timerQueryRestoresPausedRemainingTime() throws Exception {
+    Cookie session = signUp("일시정지게스트");
+    Long guestId = guestIdOf("일시정지게스트");
+    UUID intervalId = UUID.randomUUID();
+    long durationMs = 25 * 60_000L;
+    long remainingMs = 17 * 60_000L + 24_000L;
+    TimerState paused = new TimerState(intervalId, TimerState.Phase.FOCUS, TimerState.Status.PAUSED,
+        durationMs, null, null, remainingMs);
+    timerStore.update(guestId, current -> paused);
+
+    mockMvc.perform(get(TIMER_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.intervalId").value(intervalId.toString()))
+        .andExpect(jsonPath("$.data.phase").value("FOCUS"))
+        .andExpect(jsonPath("$.data.status").value("PAUSED"))
+        .andExpect(jsonPath("$.data.durationMs").value(durationMs))
+        .andExpect(jsonPath("$.data.remainingMs").value(remainingMs))
+        .andExpect(jsonPath("$.data.endsAt").doesNotExist());
+
+    assertThat(timerStore.find(guestId)).contains(paused);
+  }
+
+  @Test
+  void timerQueryFinishesExpiredRunningInterval() throws Exception {
+    Cookie session = signUp("만료조회게스트");
+    Long guestId = guestIdOf("만료조회게스트");
+    storeExpiredFocus(guestId);
+
+    mockMvc.perform(get(TIMER_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.phase").value("SHORT_BREAK"))
+        .andExpect(jsonPath("$.data.status").value("READY"))
+        .andExpect(jsonPath("$.data.durationMs").value(5 * 60_000L))
+        .andExpect(jsonPath("$.data.intervalId").doesNotExist())
+        .andExpect(jsonPath("$.data.endsAt").doesNotExist())
+        .andExpect(jsonPath("$.data.remainingMs").doesNotExist());
+
+    TimerState ready = new TimerState(null, TimerState.Phase.SHORT_BREAK,
+        TimerState.Status.READY, 5 * 60_000L, null, null, null);
+    assertThat(timerStore.find(guestId)).contains(ready);
+    verify(publisher).publishReady(guestId, ready);
+
+    mockMvc.perform(get(TIMER_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.phase").value("SHORT_BREAK"))
+        .andExpect(jsonPath("$.data.status").value("READY"));
+
+    verifyNoMoreInteractions(publisher);
   }
 
   @Test
@@ -186,6 +355,19 @@ class GuestSessionIntegrationTest {
     mockMvc.perform(signupRequest("처음게스트").cookie(new Cookie(COOKIE_NAME, "invalid")))
         .andExpect(status().isNoContent())
         .andExpect(cookie().exists(COOKIE_NAME));
+  }
+
+  private TimerState storeExpiredFocus(Long guestId) {
+    Instant endsAt = Instant.now().minusSeconds(60);
+    long durationMs = 25 * 60_000L;
+    // 종료 예약 작업이 실행되기 전의 만료 상태를 재현한다.
+    return timerStore.update(guestId, current -> new TimerState(UUID.randomUUID(),
+        TimerState.Phase.FOCUS, TimerState.Status.RUNNING, durationMs,
+        endsAt.minusMillis(durationMs), endsAt, null));
+  }
+
+  private MockHttpServletRequestBuilder timerActionRequest(String body) {
+    return post(TIMER_ACTIONS_URL).secure(true).contentType(MediaType.APPLICATION_JSON).content(body);
   }
 
   private MockHttpServletRequestBuilder profilePatch(String body) {
