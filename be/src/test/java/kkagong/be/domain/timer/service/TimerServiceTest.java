@@ -34,10 +34,11 @@ class TimerServiceTest {
   private final InMemoryTimerStore store = new InMemoryTimerStore();
   private final TimerTaskManager taskManager = mock(TimerTaskManager.class);
   private final Clock clock = Clock.fixed(NOW, ZoneOffset.UTC);
-  private final TaskService taskService = new TaskService(store, clock);
   private final GuestSettingRepository guestSettingRepository = mock(GuestSettingRepository.class);
+  private final TimerStatePublisher publisher = mock(TimerStatePublisher.class);
+  private final TaskService taskService = new TaskService(store, clock, publisher);
   private final TimerService service =
-      new TimerService(store, taskManager, clock, taskService, guestSettingRepository);
+      new TimerService(store, taskManager, clock, taskService, guestSettingRepository, publisher);
 
   @Test
   void firstStartStoresAndSchedulesTheSameInterval() {
@@ -50,6 +51,8 @@ class TimerServiceTest {
     assertThat(running.durationMs()).isEqualTo(40 * 60_000L);
     assertThat(running.endsAt()).isEqualTo(NOW.plusSeconds(40 * 60));
     verify(taskManager).scheduleEndTask(GUEST_ID, running, running.intervalId());
+    verify(publisher).publishRunning(GUEST_ID, running, NOW);
+    verifyNoMoreInteractions(publisher);
   }
 
   @Test
@@ -100,14 +103,17 @@ class TimerServiceTest {
 
     taskService.finishIfDue(GUEST_ID, running.intervalId(), NOW.minusSeconds(1));
     assertThat(store.find(GUEST_ID)).contains(running);
+    verifyNoInteractions(publisher);
 
     taskService.finishIfDue(GUEST_ID, running.intervalId(), NOW);
     TimerState ready = store.find(GUEST_ID).orElseThrow();
     assertThat(ready.status()).isEqualTo(TimerState.Status.READY);
     assertThat(ready.phase()).isEqualTo(TimerState.Phase.SHORT_BREAK);
+    verify(publisher).publishReady(GUEST_ID, ready);
 
     taskService.finishIfDue(GUEST_ID, running.intervalId(), NOW);
     assertThat(store.find(GUEST_ID)).contains(ready);
+    verifyNoMoreInteractions(publisher);
   }
 
   @ParameterizedTest
@@ -133,6 +139,7 @@ class TimerServiceTest {
     service.start(GUEST_ID, running.intervalId());
     assertThat(store.find(GUEST_ID)).contains(running);
     verifyNoInteractions(taskManager);
+    verifyNoInteractions(publisher);
   }
 
   @Test
@@ -250,6 +257,8 @@ class TimerServiceTest {
     assertThat(ready.phase()).isEqualTo(TimerState.Phase.SHORT_BREAK);
     assertThat(ready.intervalId()).isNull();
     verify(taskManager).cancelEndTask(GUEST_ID);
+    verify(publisher).publishReady(GUEST_ID, ready);
+    verifyNoMoreInteractions(publisher);
   }
 
   private void holdCancellation(CountDownLatch entered, CountDownLatch release) {

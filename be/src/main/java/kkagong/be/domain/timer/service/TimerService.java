@@ -28,6 +28,7 @@ public class TimerService {
   private final Clock clock;
   private final TaskService taskService;
   private final GuestSettingRepository guestSettingRepository;
+  private final TimerStatePublisher publisher;
 
   public void action(Long guestId, TimerActionRequest request){
     TimerAction action = request.action();
@@ -44,13 +45,15 @@ public class TimerService {
 
   public void start(Long guestId, UUID requestedIntervalId) { // 타이머 시작, READY 상태일 때, 처음일 경우 객체 생성
     UUID newIntervalId = UUID.randomUUID();
+    AtomicBoolean intervalExpired = new AtomicBoolean();
 
-    TimerState start = inMemoryTimerStore.update(guestId, current -> {
+    inMemoryTimerStore.update(guestId, current -> {
       TimerState state = current.orElseGet(() -> readyFocus(guestId));
 
       Instant now = clock.instant();
       if (state.status() == Status.RUNNING && !now.isBefore(state.endsAt())) {
         taskManager.cancelEndTask(guestId);
+        intervalExpired.set(true);
         return taskService.nextAfterNaturalEnd(state);
       }
 
@@ -78,12 +81,17 @@ public class TimerService {
       taskManager.scheduleEndTask(guestId, state, newIntervalId); //taskScheduler에 특정 서버코드 (람다) 실행
 
       return state;
+    }, updated -> {
+      // 자연 종료가 먼저 반영됐다면 READY를 알린 뒤 늦은 START에 409를 반환한다.
+      if (intervalExpired.get()) {
+        publisher.publishReady(guestId, updated);
+        throw new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH);
+      }
+      // 이번 요청에서 새 구간을 만든 경우에만 저장된 RUNNING을 알린다.
+      if (newIntervalId.equals(updated.intervalId())) {
+        publisher.publishRunning(guestId, updated, updated.runningSince());
+      }
     });
-
-    if (!newIntervalId.equals(start.intervalId())
-        && (requestedIntervalId == null || !requestedIntervalId.equals(start.intervalId()))) {
-      throw new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH);
-    }
   }
 
   public void pause(Long guestId, UUID requestedIntervalId) {
@@ -91,12 +99,16 @@ public class TimerService {
       throw new ErrorException(ErrorCode.INVALID_REQUEST);
     }
 
-    TimerState updated = inMemoryTimerStore.update(guestId, current -> {
+    AtomicBoolean pausedNow = new AtomicBoolean();
+    AtomicBoolean intervalExpired = new AtomicBoolean();
+
+    inMemoryTimerStore.update(guestId, current -> {
       TimerState state = current.orElseThrow(() -> new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH));
       Instant now = clock.instant();
 
       if (state.status() == Status.RUNNING && !now.isBefore(state.endsAt())) {
         taskManager.cancelEndTask(guestId);
+        intervalExpired.set(true);
         return taskService.nextAfterNaturalEnd(state);
       }
 
@@ -114,7 +126,7 @@ public class TimerService {
 
       //아직 넘어가기 전이라면
       long remainingMs = Duration.between(now, state.endsAt()).toMillis();
-
+      pausedNow.set(true);
       taskManager.cancelEndTask(guestId);
       return new TimerState(
           state.intervalId(),
@@ -125,11 +137,16 @@ public class TimerService {
           null,
           remainingMs
       );
+    }, updated -> {
+      if (intervalExpired.get()) {
+        publisher.publishReady(guestId, updated);
+        throw new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH);
+      }
+      // 실제로 PAUSED로 바뀐 요청만 발행한다. 이 호출까지 게스트 락에 포함된다.
+      if (pausedNow.get()) {
+        publisher.publishPaused(guestId, updated);
+      }
     });
-
-    if (!Objects.equals(updated.intervalId(), requestedIntervalId)) {
-      throw new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH);
-    }
   }
 
   public void resume(Long guestId, UUID requestedIntervalId) {
@@ -138,12 +155,14 @@ public class TimerService {
       throw new ErrorException(ErrorCode.INVALID_REQUEST);
     }
 
-    TimerState updated = inMemoryTimerStore.update(guestId, current -> {
+    AtomicBoolean intervalExpired = new AtomicBoolean();
+    inMemoryTimerStore.update(guestId, current -> {
       TimerState state = current.orElseThrow(() -> new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH));
       Instant now = clock.instant();
 
       if (state.status() == Status.RUNNING && !now.isBefore(state.endsAt())) {
         taskManager.cancelEndTask(guestId);
+        intervalExpired.set(true);
         return taskService.nextAfterNaturalEnd(state);
       }
 
@@ -166,12 +185,14 @@ public class TimerService {
       );
       taskManager.scheduleEndTask(guestId, resumed, resumed.intervalId());
       return resumed;
-
+    }, updated -> {
+      if (intervalExpired.get()) {
+        publisher.publishReady(guestId, updated);
+        throw new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH);
+      }
+      // 앞선 PAUSE가 같은 락 안에서 발행을 끝낸 뒤 재개된 RUNNING을 보낸다.
+      publisher.publishRunning(guestId, updated, updated.runningSince());
     });
-
-    if (!Objects.equals(updated.intervalId(), requestedIntervalId)) {
-      throw new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH);
-    }
   }
 
   public void stop(Long guestId, UUID requestedIntervalId) {
@@ -203,29 +224,37 @@ public class TimerService {
       return new TimerState(
           null, state.phase(), Status.READY, state.durationMs(), null, null, null
       );
+    }, updated -> {
+      // 정상 중지와 자연 종료 모두 저장된 READY를 알린다.
+      publisher.publishReady(guestId, updated);
+      if (intervalExpired.get()) {
+        throw new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH);
+      }
     });
-
-    if (intervalExpired.get()) {
-      throw new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH);
-    }
   }
 
   public TimerInfoResponse getTimerInfo(Long guestId) {
-    Instant now = clock.instant();
+    AtomicBoolean finishedNow = new AtomicBoolean();
 
     TimerState state = inMemoryTimerStore
         .updateIfPresent(guestId, current -> {
-          if (current.status() != Status.RUNNING || now.isBefore(current.endsAt())) {
+          if (current.status() != Status.RUNNING || clock.instant().isBefore(current.endsAt())) {
             return current;
           }
 
           TimerState next = taskService.nextAfterNaturalEnd(current);
           taskManager.cancelEndTask(guestId);
+          finishedNow.set(true);
           return next;
+        }, updated -> {
+          // 조회가 자연 종료를 처리했다면 같은 락 안에서 READY를 알린다.
+          if (finishedNow.get()) {
+            publisher.publishReady(guestId, updated);
+          }
         })
         .orElseGet(() -> readyFocus(guestId));
 
-    return TimerInfoResponse.from(state, now);
+    return TimerInfoResponse.from(state, clock.instant());
   }
 
   private TimerState readyFocus(Long guestId) {
