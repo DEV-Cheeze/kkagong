@@ -21,6 +21,7 @@ public enum ErrorCode {
   GUEST_NOT_FOUND(HttpStatus.BAD_REQUEST, "사용자를 찾을 수 없습니다."),
   GUEST_ALREADY_EXISTS(HttpStatus.BAD_REQUEST, "이미 존재하는 사용자입니다."),
   SOUND_VOLUME_OUT_OF_RANGE(HttpStatus.BAD_REQUEST, "음량은 0부터 100까지 입력할 수 있습니다."),
+  INVALID_TIMER_SETTINGS(HttpStatus.BAD_REQUEST, "타이머 시간은 1 ≤ 일반 휴식 ≤ 긴 휴식 ≤ 집중 ≤ 180분이어야 합니다."),
   TIMER_INTERVAL_MISMATCH(HttpStatus.CONFLICT, "현재 타이머 구간과 일치하지 않습니다."),
   INVALID_TIMER_STATE(HttpStatus.CONFLICT, "현재 타이머 상태에서 실행할 수 없는 조작입니다.")
   ;

@@ -52,6 +52,7 @@ class GuestSessionIntegrationTest {
   private static final String TIMER_URL = "/api/v1/timer";
   private static final String TIMER_ACTIONS_URL = TIMER_URL + "/actions";
   private static final String PROFILE_URL = ME_URL + "/profile";
+  private static final String TIMER_SETTINGS_URL = ME_URL + "/timer-settings";
   private static final String COOKIE_NAME = "guestId";
   private static final int THIRTY_DAYS_IN_SECONDS = 30 * 24 * 60 * 60;
 
@@ -276,6 +277,73 @@ class GuestSessionIntegrationTest {
         """), ErrorCode.UNAUTHORIZED);
   }
 
+  @Test
+  void timerSettingsPatchPersistsChangesForTheAuthenticatedGuest() throws Exception {
+    Cookie session = signUp("타이머설정게스트");
+    Cookie otherSession = signUp("별도설정게스트");
+
+    mockMvc.perform(timerSettingsPatch("""
+            {"focusMinutes":50,"shortBreakMinutes":10,"longBreakMinutes":20,"autoTransition":true}
+            """).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.focusMinutes").value(50))
+        .andExpect(jsonPath("$.data.shortBreakMinutes").value(10))
+        .andExpect(jsonPath("$.data.longBreakMinutes").value(20))
+        .andExpect(jsonPath("$.data.autoTransition").value(true));
+
+    mockMvc.perform(timerSettingsPatch("""
+            {"focusMinutes":20,"autoTransition":false}
+            """).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.focusMinutes").value(20))
+        .andExpect(jsonPath("$.data.shortBreakMinutes").value(10))
+        .andExpect(jsonPath("$.data.longBreakMinutes").value(20))
+        .andExpect(jsonPath("$.data.autoTransition").value(false));
+
+    expectTimerSettings(session, 20, 10, 20, false);
+    expectTimerSettings(otherSession, 25, 5, 15, false);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "{}",
+      "{\"focusMinutes\":0,\"autoTransition\":true}",
+      "{\"focusMinutes\":181,\"autoTransition\":true}",
+      "{\"focusMinutes\":25.5,\"autoTransition\":true}",
+      "{\"shortBreakMinutes\":5.5,\"autoTransition\":true}",
+      "{\"longBreakMinutes\":15.5,\"autoTransition\":true}",
+      "{\"focusMinutes\":\"25\",\"autoTransition\":true}"
+  })
+  void invalidTimerSettingsPatchKeepsStoredSettings(String body) throws Exception {
+    Cookie session = signUp("잘못된타이머설정");
+
+    mockMvc.perform(timerSettingsPatch(body).cookie(session))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.code").value(400));
+
+    expectTimerSettings(session, 25, 5, 15, false);
+  }
+
+  @ParameterizedTest
+  @ValueSource(strings = {
+      "{\"shortBreakMinutes\":16,\"autoTransition\":true}",
+      "{\"focusMinutes\":14,\"autoTransition\":true}"
+  })
+  void timerSettingsPatchValidatesTheMergedDurations(String body) throws Exception {
+    Cookie session = signUp("타이머조합검증");
+
+    mockMvc.perform(timerSettingsPatch(body).cookie(session))
+        .andExpect(status().isBadRequest())
+        .andExpect(jsonPath("$.message").value(ErrorCode.INVALID_TIMER_SETTINGS.getMessage()));
+
+    expectTimerSettings(session, 25, 5, 15, false);
+  }
+
+  @Test
+  void timerSettingsPatchRequiresGuestCookie() throws Exception {
+    expectUnauthorized(timerSettingsPatch("{\"autoTransition\":true}"), ErrorCode.UNAUTHORIZED);
+  }
+
   @ParameterizedTest
   @ValueSource(strings = {"", "\u3000"})
   void signupStillDefaultsBlankNicknames(String nickname) throws Exception {
@@ -372,6 +440,20 @@ class GuestSessionIntegrationTest {
 
   private MockHttpServletRequestBuilder profilePatch(String body) {
     return patch(PROFILE_URL).secure(true).contentType(MediaType.APPLICATION_JSON).content(body);
+  }
+
+  private MockHttpServletRequestBuilder timerSettingsPatch(String body) {
+    return patch(TIMER_SETTINGS_URL).secure(true).contentType(MediaType.APPLICATION_JSON).content(body);
+  }
+
+  private void expectTimerSettings(Cookie session, int focus, int shortBreak, int longBreak,
+      boolean autoTransition) throws Exception {
+    mockMvc.perform(post(ME_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.guestSettings.focusMinutes").value(focus))
+        .andExpect(jsonPath("$.data.guestSettings.shortBreakMinutes").value(shortBreak))
+        .andExpect(jsonPath("$.data.guestSettings.longBreakMinutes").value(longBreak))
+        .andExpect(jsonPath("$.data.guestSettings.autoTransition").value(autoTransition));
   }
 
   private Cookie signUp(String nickname) throws Exception {

@@ -11,9 +11,11 @@ import kkagong.be.domain.guest.dto.GuestSettings;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
 import kkagong.be.domain.guest.dto.request.ProfileUpdateRequest;
 import kkagong.be.domain.guest.dto.request.SoundSettingsRequest;
+import kkagong.be.domain.guest.dto.request.TimerSettingsRequest;
 import kkagong.be.domain.guest.dto.response.GuestMeResponse;
 import kkagong.be.domain.guest.dto.response.SoundInfoResponse;
 import kkagong.be.domain.guest.dto.response.SoundSettingsResponse;
+import kkagong.be.domain.guest.dto.response.TimerSettingsResponse;
 import kkagong.be.domain.guest.entity.Guest;
 import kkagong.be.domain.guest.entity.GuestSetting;
 import kkagong.be.domain.guest.entity.GuestSoundSetting;
@@ -115,6 +117,17 @@ public class GuestService {
         );
 
     return Arrays.stream(SoundCodes.values()).map(a -> !guestSoundMap.containsKey(a) ? new SoundInfoResponse(a, 50, false) : guestSoundMap.get(a)).toList();
+  }
+
+  public TimerSettingsResponse updateTimerSettings(Long guestId, TimerSettingsRequest request) {
+    if (request.focusMinutes() == null && request.shortBreakMinutes() == null
+        && request.longBreakMinutes() == null && request.autoTransition() == null) { // 요청 형식이 아예 없을경우 에러 반환
+      throw new ErrorException(ErrorCode.INVALID_REQUEST);
+    }
+
+    GuestSetting setting = guestSettingService.updateTimerSettings(guestId, request.focusMinutes(),
+        request.shortBreakMinutes(), request.longBreakMinutes(), request.autoTransition());
+    return TimerSettingsResponse.from(setting);
   }
 
   @Transactional
