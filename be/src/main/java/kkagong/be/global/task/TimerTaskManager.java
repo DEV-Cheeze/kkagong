@@ -5,8 +5,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.ScheduledFuture;
-import kkagong.be.domain.timer.entity.TimerState;
-import kkagong.be.domain.timer.service.TaskService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.scheduling.TaskScheduler;
@@ -18,26 +16,26 @@ public class TimerTaskManager {
 
   @Qualifier("taskScheduler")
   private final TaskScheduler taskScheduler;
-  private final TaskService taskService;
 
   private final ConcurrentMap<Long, EndTask> endTasks =
       new ConcurrentHashMap<>();
 
-  public void scheduleEndTask(Long guestId, TimerState timer, UUID intervalId) { //작업 예약 및 map에 넣기
-    Instant endsAt = timer.endsAt();
+  public void scheduleEndTask(Long guestId, Instant endsAt, Runnable onEnd) {
     UUID reservationId = UUID.randomUUID();
 
     ScheduledFuture<?> task = taskScheduler.schedule(
         () -> {
           try {
-            taskService.finishIfDue(guestId, intervalId, endsAt);
+            onEnd.run();
           } finally {
+            // 종료 중에 다음 구간을 예약할 수 있으므로 이 예약만 정리한다.
             removeCompletedEndTask(guestId, reservationId);
           }
         },
         endsAt
     );
 
+    // 게스트별로 최신 예약 하나를 보관한다. 실행에 들어간 이전 콜백은 구간을 다시 확인한다.
     EndTask previous = endTasks.put(guestId, new EndTask(reservationId, task));
     if (previous != null) {
       previous.future().cancel(false);

@@ -11,10 +11,7 @@ import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 
 import java.time.Instant;
-import java.util.UUID;
 import java.util.concurrent.ScheduledFuture;
-import kkagong.be.domain.timer.entity.TimerState;
-import kkagong.be.domain.timer.service.TaskService;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.scheduling.TaskScheduler;
@@ -25,23 +22,20 @@ class TimerTaskManagerTest {
   private static final Instant ENDS_AT = Instant.parse("2026-11-25T01:25:00Z");
 
   private final TaskScheduler scheduler = mock(TaskScheduler.class);
-  private final TaskService taskService = mock(TaskService.class);
-  private final TimerTaskManager manager = new TimerTaskManager(scheduler, taskService);
-  private final TimerState running = new TimerState(
-      UUID.randomUUID(), TimerState.Phase.FOCUS, TimerState.Status.RUNNING,
-      25 * 60_000L, ENDS_AT.minusSeconds(25 * 60), ENDS_AT, null);
+  private final Runnable onEnd = mock(Runnable.class);
+  private final TimerTaskManager manager = new TimerTaskManager(scheduler);
 
   @Test
   void completionRemovesTheReservation() {
     ScheduledFuture<?> future = mock(ScheduledFuture.class);
     doReturn(future).when(scheduler).schedule(any(Runnable.class), eq(ENDS_AT));
-    manager.scheduleEndTask(GUEST_ID, running, running.intervalId());
+    manager.scheduleEndTask(GUEST_ID, ENDS_AT, onEnd);
 
     ArgumentCaptor<Runnable> callback = ArgumentCaptor.forClass(Runnable.class);
     verify(scheduler).schedule(callback.capture(), eq(ENDS_AT));
     callback.getValue().run();
 
-    verify(taskService).finishIfDue(GUEST_ID, running.intervalId(), ENDS_AT);
+    verify(onEnd).run();
     manager.cancelEndTask(GUEST_ID);
     verifyNoInteractions(future);
   }
@@ -51,8 +45,8 @@ class TimerTaskManagerTest {
     ScheduledFuture<?> future = mock(ScheduledFuture.class);
     doReturn(future).when(scheduler).schedule(any(Runnable.class), eq(ENDS_AT));
     IllegalStateException failure = new IllegalStateException("finish failed");
-    doThrow(failure).when(taskService).finishIfDue(GUEST_ID, running.intervalId(), ENDS_AT);
-    manager.scheduleEndTask(GUEST_ID, running, running.intervalId());
+    doThrow(failure).when(onEnd).run();
+    manager.scheduleEndTask(GUEST_ID, ENDS_AT, onEnd);
 
     ArgumentCaptor<Runnable> callback = ArgumentCaptor.forClass(Runnable.class);
     verify(scheduler).schedule(callback.capture(), eq(ENDS_AT));
@@ -63,12 +57,12 @@ class TimerTaskManagerTest {
   }
 
   @Test
-  void oldCallbackCannotRemoveNewReservationForSameInterval() {
+  void oldCallbackCannotRemoveNewReservationAtTheSameDeadline() {
     ScheduledFuture<?> oldFuture = mock(ScheduledFuture.class);
     ScheduledFuture<?> newFuture = mock(ScheduledFuture.class);
     doReturn(oldFuture, newFuture).when(scheduler).schedule(any(Runnable.class), eq(ENDS_AT));
-    manager.scheduleEndTask(GUEST_ID, running, running.intervalId());
-    manager.scheduleEndTask(GUEST_ID, running, running.intervalId());
+    manager.scheduleEndTask(GUEST_ID, ENDS_AT, onEnd);
+    manager.scheduleEndTask(GUEST_ID, ENDS_AT, onEnd);
 
     ArgumentCaptor<Runnable> callbacks = ArgumentCaptor.forClass(Runnable.class);
     verify(scheduler, times(2)).schedule(callbacks.capture(), eq(ENDS_AT));
