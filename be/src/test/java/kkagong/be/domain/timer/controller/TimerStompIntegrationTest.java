@@ -17,6 +17,7 @@ import java.net.http.WebSocket;
 import java.net.http.WebSocketHandshakeException;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.BlockingQueue;
@@ -28,6 +29,7 @@ import java.util.concurrent.Future;
 import java.util.concurrent.LinkedBlockingQueue;
 import kkagong.be.domain.timer.entity.TimerState;
 import kkagong.be.domain.timer.service.InMemoryTimerStore;
+import kkagong.be.domain.timer.service.TaskService;
 import kkagong.be.domain.timer.service.TimerStatePublisher;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
@@ -72,7 +74,6 @@ import tools.jackson.databind.ObjectMapper;
 class TimerStompIntegrationTest {
 
   private static final String TIMER_SUBSCRIPTION = "/user/queue/timer";
-  private static final long FOCUS_DURATION_MS = 2_000;
 
   private final HttpClient http = HttpClient.newHttpClient();
   private final WebSocketStompClient stomp = new WebSocketStompClient(new StandardWebSocketClient());
@@ -99,6 +100,9 @@ class TimerStompIntegrationTest {
 
   @Autowired
   private InMemoryTimerStore timerStore;
+
+  @Autowired
+  private TaskService taskService;
 
   @MockitoSpyBean
   private TimerStatePublisher publisher;
@@ -152,16 +156,19 @@ class TimerStompIntegrationTest {
     assertDenied(SimpMessageType.MESSAGE, destination);
   }
 
-  @Test
-  void scheduledNaturalEndPublishesReadyOnceToEachTabOfTheSameGuest() throws Exception {
-    String cookie = signUp("자연종료게스트");
+  @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void scheduledNaturalEndPublishesTheNextStateOncePerTab(boolean autoTransition) throws Exception {
+    String nickname = autoTransition ? "자동전환게스트" : "자연종료게스트";
+    String cookie = signUp(nickname);
+    if (autoTransition) {
+      assertThat(send("PATCH", "/api/v1/guests/me/timer-settings",
+          "{\"autoTransition\":true}", cookie).statusCode()).isEqualTo(200);
+    }
     TimerEvents firstTab = subscribeToTimer(cookie);
     TimerEvents secondTab = subscribeToTimer(cookie);
-    TimerEvents otherGuest = subscribeToTimer(signUp("다른타이머게스트"));
-    Long guestId = guestIdOf("자연종료게스트");
-    timerStore.update(guestId, current -> new TimerState(null, TimerState.Phase.FOCUS,
-        TimerState.Status.READY, FOCUS_DURATION_MS, null, null, null));
-
+    TimerEvents otherGuest = subscribeToTimer(signUp("타이머관찰게스트"));
+    Long guestId = guestIdOf(nickname);
     assertThat(post("/api/v1/timer/actions", "{\"action\":\"START\"}", cookie).statusCode())
         .isEqualTo(200);
 
@@ -169,11 +176,30 @@ class TimerStompIntegrationTest {
     assertThat(running.path("status").asString()).isEqualTo("RUNNING");
     assertThat(secondTab.nextState()).isEqualTo(running);
 
-    JsonNode ready = firstTab.nextState();
-    assertThat(ready.path("status").asString()).isEqualTo("READY");
-    assertThat(ready.path("phase").asString()).isEqualTo("SHORT_BREAK");
-    assertThat(secondTab.nextState()).isEqualTo(ready);
-    assertThat(timerStore.find(guestId).orElseThrow().status()).isEqualTo(TimerState.Status.READY);
+    // 실제 START로 생성된 구간을 종료 직전으로 옮겨 예약 작업을 확인한다.
+    TimerState ending = timerStore.update(guestId, current -> {
+      TimerState started = current.orElseThrow();
+      Instant endsAt = Instant.now().plusSeconds(1);
+      TimerState rescheduled = new TimerState(started.intervalId(), started.phase(), started.status(),
+          started.durationMs(), endsAt.minusMillis(started.durationMs()), endsAt, null,
+          started.appliedDurations());
+      taskService.scheduleEndTask(guestId, rescheduled);
+      return rescheduled;
+    });
+
+    JsonNode next = firstTab.nextState();
+    assertThat(next.path("status").asString()).isEqualTo(autoTransition ? "RUNNING" : "READY");
+    assertThat(next.path("phase").asString()).isEqualTo("SHORT_BREAK");
+    assertThat(secondTab.nextState()).isEqualTo(next);
+    TimerState saved = timerStore.find(guestId).orElseThrow();
+    assertThat(saved.status().name()).isEqualTo(next.path("status").asString());
+    if (autoTransition) {
+      // 자동으로 시작한 구간의 새 ID와 종료 시각이 두 탭에 함께 전달된다.
+      assertThat(saved.intervalId()).isNotNull().isNotEqualTo(ending.intervalId());
+      assertThat(next.path("intervalId").asString()).isEqualTo(saved.intervalId().toString());
+      assertThat(saved.endsAt()).isEqualTo(ending.endsAt().plusSeconds(5 * 60));
+      assertThat(Instant.parse(next.path("endsAt").asString())).isEqualTo(saved.endsAt());
+    }
 
     assertThat(firstTab.states.poll(300, MILLISECONDS)).isNull();
     assertThat(secondTab.states.poll(300, MILLISECONDS)).isNull();
@@ -275,10 +301,15 @@ class TimerStompIntegrationTest {
   }
 
   private HttpResponse<String> post(String path, String body, String cookie) throws Exception {
+    return send("POST", path, body, cookie);
+  }
+
+  private HttpResponse<String> send(String method, String path, String body, String cookie)
+      throws Exception {
     var request = HttpRequest.newBuilder(URI.create("http://localhost:" + port + path))
         .timeout(Duration.ofSeconds(10))
         .header(HttpHeaders.CONTENT_TYPE, "application/json")
-        .POST(HttpRequest.BodyPublishers.ofString(body));
+        .method(method, HttpRequest.BodyPublishers.ofString(body));
     if (cookie != null) {
       request.header(HttpHeaders.COOKIE, cookie);
     }

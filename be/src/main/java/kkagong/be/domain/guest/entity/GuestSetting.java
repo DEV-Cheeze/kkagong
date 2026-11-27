@@ -12,6 +12,8 @@ import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
 import kkagong.be.domain.guest.enums.WorkPose;
 import kkagong.be.global.entity.BaseEntity;
+import kkagong.be.global.exception.ErrorCode;
+import kkagong.be.global.exception.ErrorException;
 import lombok.AccessLevel;
 import lombok.Builder;
 import lombok.Getter;
@@ -59,6 +61,27 @@ public class GuestSetting extends BaseEntity {
 
   public GuestSetting(Guest guest) {
     this.guest = guest;
+  }
+
+  public void changeTimerSettings(Integer focusMinutes, Integer shortBreakMinutes,
+      Integer longBreakMinutes, Boolean autoTransition) {
+    // 요청에 포함된 값과 기존 값을 합쳐 실제로 저장될 세 길이를 계산한다.
+    int nextFocus = focusMinutes == null ? this.focusMinutes : focusMinutes;
+    int nextShortBreak = shortBreakMinutes == null ? this.shortBreakMinutes : shortBreakMinutes;
+    int nextLongBreak = longBreakMinutes == null ? this.longBreakMinutes : longBreakMinutes;
+
+    // 최종 조합이 유효할 때만 설정을 변경한다.
+    if (nextShortBreak < 1 || nextShortBreak > nextLongBreak || nextLongBreak > nextFocus
+        || nextFocus > 180) {
+      throw new ErrorException(ErrorCode.INVALID_TIMER_SETTINGS);
+    }
+
+    this.focusMinutes = nextFocus;
+    this.shortBreakMinutes = nextShortBreak;
+    this.longBreakMinutes = nextLongBreak;
+    if (autoTransition != null) {
+      this.autoTransition = autoTransition;
+    }
   }
 
 }

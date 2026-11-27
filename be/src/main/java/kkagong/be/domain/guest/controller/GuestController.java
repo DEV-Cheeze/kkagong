@@ -8,9 +8,11 @@ import kkagong.be.domain.guest.dto.GuestProfile;
 import kkagong.be.domain.guest.dto.request.GuestSignUpRequest;
 import kkagong.be.domain.guest.dto.request.ProfileUpdateRequest;
 import kkagong.be.domain.guest.dto.request.SoundSettingsRequest;
+import kkagong.be.domain.guest.dto.request.TimerSettingsRequest;
 import kkagong.be.domain.guest.dto.response.GuestMeResponse;
 import kkagong.be.domain.guest.dto.response.SoundInfoResponse;
 import kkagong.be.domain.guest.dto.response.SoundSettingsResponse;
+import kkagong.be.domain.guest.dto.response.TimerSettingsResponse;
 import kkagong.be.domain.guest.enums.SoundCodes;
 import kkagong.be.domain.guest.service.GuestService;
 import kkagong.be.global.exception.ErrorCode;
@@ -87,6 +89,16 @@ public class GuestController {
 
     List<SoundInfoResponse> response = guestService.getSoundInfo(guestId);
 
+    return ApiResponse.ok(response);
+  }
+
+  @PatchMapping("/me/timer-settings")
+  public ApiResponse<TimerSettingsResponse> updateTimerSettings(
+      @AuthenticationPrincipal Long guestId,
+      @RequestBody @Valid TimerSettingsRequest request) {
+
+    // 쿠키로 인증된 게스트의 타이머 설정을 변경한다.
+    TimerSettingsResponse response = guestService.updateTimerSettings(guestId, request);
     return ApiResponse.ok(response);
   }
 

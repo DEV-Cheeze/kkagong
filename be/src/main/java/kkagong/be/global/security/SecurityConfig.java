@@ -52,6 +52,7 @@ public class SecurityConfig {
             .requestMatchers(HttpMethod.GET, "/api/v1/guests/me/sound-settings").authenticated()
             .requestMatchers(HttpMethod.PATCH, "/api/v1/guests/me/sound-settings/{soundCode}").authenticated()
             .requestMatchers(HttpMethod.PATCH, "/api/v1/guests/me/profile").authenticated()
+            .requestMatchers(HttpMethod.PATCH, "/api/v1/guests/me/timer-settings").authenticated()
             .requestMatchers(HttpMethod.POST, "/api/v1/timer/actions").authenticated()
             .requestMatchers(HttpMethod.GET, "/api/v1/timer").authenticated()
             .requestMatchers(HttpMethod.GET, "/ws-stomp").authenticated()
