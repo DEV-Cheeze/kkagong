@@ -57,24 +57,34 @@ public class TaskService {
   public TimerState nextAfterNaturalEnd(Long guestId, TimerState current) {
     // 자연 종료 시 최신 자동 전환 설정과 다음 집중에 쓸 길이를 읽는다.
     TimerSettings settings = readSettings(guestId);
-    TimerState next = switch (current.phase()) {
-      case FOCUS -> {
-        // 집중을 완료한 뒤 순번을 올리고, 네 번째에는 이 집중의 긴 휴식 길이를 사용한다.
-        int completedFocusCount = current.completedFocusCount() + 1;
-        Phase breakPhase = completedFocusCount == FOCUS_INTERVALS_PER_CYCLE
-            ? Phase.LONG_BREAK : Phase.SHORT_BREAK;
-        yield ready(breakPhase, current.appliedDurations(), completedFocusCount);
-      }
-      // 일반 휴식은 완료 횟수를 유지하고, 긴 휴식이 끝나면 다음 집중을 새 주기로 시작한다.
-      case SHORT_BREAK -> ready(Phase.FOCUS, settings.durations(), current.completedFocusCount());
-      case LONG_BREAK -> ready(Phase.FOCUS, settings.durations(), 0);
-    };
-
+    TimerState next = nextReadyAfterCompletion(current, settings.durations());
     if (settings.autoTransition()) {
       // 예약이 늦게 실행되어도 다음 구간은 이전 구간의 예정 종료 시각에 시작한다.
       return next.start(UUID.randomUUID(), current.endsAt());
     }
     return next;
+  }
+
+  TimerState nextAfterSkip(Long guestId, TimerState current, Instant now) {
+    // 수동 스킵은 현재 서버 시각부터 새 구간을 실행한다.
+    TimerState next = nextReadyAfterCompletion(current, readSettings(guestId).durations());
+    return next.start(UUID.randomUUID(), now);
+  }
+
+  private TimerState nextReadyAfterCompletion(TimerState current, TimerDurations nextFocusDurations) {
+    // 자연 종료와 스킵은 같은 규칙으로 다음 구간과 완료 횟수를 결정한다.
+    return switch (current.phase()) {
+      case FOCUS -> {
+        // 집중을 한 회로 세고, 휴식에는 이 집중을 시작할 때 보관한 길이를 사용한다.
+        int completedFocusCount = current.completedFocusCount() + 1;
+        Phase breakPhase = completedFocusCount == FOCUS_INTERVALS_PER_CYCLE
+            ? Phase.LONG_BREAK : Phase.SHORT_BREAK;
+        yield ready(breakPhase, current.appliedDurations(), completedFocusCount);
+      }
+      // 일반 휴식 뒤에는 횟수를 이어가고, 긴 휴식 뒤에는 새 주기를 시작한다.
+      case SHORT_BREAK -> ready(Phase.FOCUS, nextFocusDurations, current.completedFocusCount());
+      case LONG_BREAK -> ready(Phase.FOCUS, nextFocusDurations, 0);
+    };
   }
 
   void onNaturalEndSaved(Long guestId, TimerState next) {

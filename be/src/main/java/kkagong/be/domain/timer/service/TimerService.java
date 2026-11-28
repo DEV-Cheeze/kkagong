@@ -36,6 +36,7 @@ public class TimerService {
       case PAUSE -> pause(guestId, request.intervalId());
       case RESUME -> resume(guestId, request.intervalId());
       case STOP -> stop(guestId, request.intervalId());
+      case SKIP -> skip(guestId, request.intervalId());
     }
 
 
@@ -241,6 +242,39 @@ public class TimerService {
         .orElseGet(() -> taskService.readyFocus(guestId, 0));
 
     return TimerInfoResponse.from(state, clock.instant());
+  }
+
+  public void skip(Long guestId, UUID requestedIntervalId) {
+    AtomicBoolean intervalExpired = new AtomicBoolean();
+
+    inMemoryTimerStore.update(guestId, current -> {
+      TimerState state = current.orElseThrow(
+          () -> new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH));
+      Instant now = clock.instant();
+
+      // 종료 시각에 도달했다면 기존 구간의 자연 종료를 먼저 저장한다.
+      if (state.isDue(now)) {
+        intervalExpired.set(true);
+        return taskService.nextAfterNaturalEnd(guestId, state);
+      }
+
+      // 실행·일시정지 중에는 현재 구간 ID를 요구하고, 휴식 대기 중에는 ID 생략을 허용한다.
+      if (!Objects.equals(state.intervalId(), requestedIntervalId)) {
+        throw new ErrorException(ErrorCode.TIMER_INTERVAL_MISMATCH);
+      }
+      if (state.phase() == Phase.FOCUS && state.status() == Status.READY) {
+        throw new ErrorException(ErrorCode.INVALID_TIMER_STATE);
+      }
+
+      // 새 구간의 종료를 예약하면 같은 게스트의 이전 예약이 교체된다.
+      TimerState running = taskService.nextAfterSkip(guestId, state, now);
+      taskService.scheduleEndTask(guestId, running);
+      return running;
+    }, updated -> {
+      // 상태를 저장한 뒤, 같은 게스트 락 안에서 확정된 전이를 한 번 통지한다.
+      rejectExpiredAction(guestId, updated, intervalExpired.get());
+      publisher.publishRunning(guestId, updated, updated.runningSince());
+    });
   }
 
   private void rejectExpiredAction(Long guestId, TimerState next, boolean intervalExpired) {

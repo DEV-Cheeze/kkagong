@@ -12,7 +12,7 @@ public record TimerState(
     Instant endsAt,
     Long pausedRemainingMs,
     TimerDurations appliedDurations, // 집중과 그에 이어지는 휴식에 사용할 길이
-    int completedFocusCount // 현재 주기에서 자연 종료한 집중 횟수
+    int completedFocusCount // 현재 주기에서 자연 종료하거나 스킵한 집중 횟수
 ) {
 
   public boolean isDue(Instant now) {

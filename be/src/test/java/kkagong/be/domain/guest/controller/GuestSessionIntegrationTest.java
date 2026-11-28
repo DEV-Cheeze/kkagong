@@ -586,6 +586,61 @@ class GuestSessionIntegrationTest {
   }
 
   @ParameterizedTest
+  @ValueSource(booleans = {false, true})
+  void skippingFourthFocusStartsLongBreakImmediately(boolean autoTransition) throws Exception {
+    String nickname = "네번째집중스킵";
+    Cookie session = signUp(nickname);
+    Long guestId = guestIdOf(nickname);
+    mockMvc.perform(timerSettingsPatch("""
+            {"autoTransition":%s}
+            """.formatted(autoTransition)).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.autoTransition").value(autoTransition));
+    TimerState focus = startFourthFocus(session, guestId, autoTransition);
+
+    Instant skippedAt = focus.runningSince().plusSeconds(10 * 60);
+    assertThat(skippedAt).isBefore(focus.endsAt());
+    when(timerClock.instant()).thenReturn(skippedAt);
+    mockMvc.perform(timerActionRequest("""
+            {"action":"SKIP","intervalId":"%s"}
+            """.formatted(focus.intervalId())).cookie(session))
+        .andExpect(status().isOk());
+
+    TimerState longBreak = timerStore.find(guestId).orElseThrow();
+    assertThat(longBreak.phase()).isEqualTo(TimerState.Phase.LONG_BREAK);
+    assertThat(longBreak.status()).isEqualTo(TimerState.Status.RUNNING);
+    assertThat(longBreak.completedFocusCount()).isEqualTo(4);
+    assertThat(longBreak.intervalId()).isNotNull().isNotEqualTo(focus.intervalId());
+    assertThat(longBreak.runningSince()).isEqualTo(skippedAt);
+    assertThat(longBreak.endsAt()).isEqualTo(skippedAt.plusSeconds(15 * 60));
+    verify(publisher).publishRunning(guestId, longBreak, skippedAt);
+  }
+
+  @Test
+  void skippingLongBreakWhileReadyStartsFocusWithResetCount() throws Exception {
+    String nickname = "긴휴식대기스킵";
+    Cookie session = signUp(nickname);
+    Long guestId = guestIdOf(nickname);
+    TimerState focus = startFourthFocus(session, guestId, false);
+    TimerState readyBreak = finishAndCheckTransition(guestId, focus, false);
+    assertThat(readyBreak.phase()).isEqualTo(TimerState.Phase.LONG_BREAK);
+    assertThat(readyBreak.completedFocusCount()).isEqualTo(4);
+
+    Instant skippedAt = focus.endsAt().plusSeconds(30);
+    when(timerClock.instant()).thenReturn(skippedAt);
+    mockMvc.perform(timerActionRequest("{\"action\":\"SKIP\"}").cookie(session))
+        .andExpect(status().isOk());
+
+    TimerState nextFocus = timerStore.find(guestId).orElseThrow();
+    assertThat(nextFocus.phase()).isEqualTo(TimerState.Phase.FOCUS);
+    assertThat(nextFocus.status()).isEqualTo(TimerState.Status.RUNNING);
+    assertThat(nextFocus.completedFocusCount()).isZero();
+    assertThat(nextFocus.intervalId()).isNotNull();
+    assertThat(nextFocus.runningSince()).isEqualTo(skippedAt);
+    verify(publisher).publishRunning(guestId, nextFocus, skippedAt);
+  }
+
+  @ParameterizedTest
   @ValueSource(strings = {
       "{}",
       "{\"focusMinutes\":0,\"autoTransition\":true}",
@@ -704,6 +759,22 @@ class GuestSessionIntegrationTest {
     mockMvc.perform(signupRequest("처음게스트").cookie(new Cookie(COOKIE_NAME, "invalid")))
         .andExpect(status().isNoContent())
         .andExpect(cookie().exists(COOKIE_NAME));
+  }
+
+  private TimerState startFourthFocus(Cookie session, Long guestId, boolean autoTransition)
+      throws Exception {
+    TimerState focus = startTimerAt(session, guestId, Instant.now());
+    for (int completed = 1; completed <= 3; completed++) {
+      TimerState nextBreak = finishAndCheckTransition(guestId, focus, autoTransition);
+      TimerState runningBreak = autoTransition
+          ? nextBreak : startTimerAt(session, guestId, focus.endsAt().plusSeconds(30));
+      TimerState nextFocus = finishAndCheckTransition(guestId, runningBreak, autoTransition);
+      focus = autoTransition
+          ? nextFocus : startTimerAt(session, guestId, runningBreak.endsAt().plusSeconds(30));
+    }
+    assertThat(focus.phase()).isEqualTo(TimerState.Phase.FOCUS);
+    assertThat(focus.completedFocusCount()).isEqualTo(3);
+    return focus;
   }
 
   private TimerState startTimerAt(Cookie session, Long guestId, Instant startedAt) throws Exception {
