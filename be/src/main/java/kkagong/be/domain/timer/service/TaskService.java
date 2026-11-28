@@ -20,6 +20,8 @@ import org.springframework.stereotype.Service;
 @RequiredArgsConstructor
 public class TaskService {
 
+  private static final int FOCUS_INTERVALS_PER_CYCLE = 4;
+
   private final InMemoryTimerStore inMemoryTimerStore;
   private final Clock clock;
   private final TimerStatePublisher publisher;
@@ -42,6 +44,7 @@ public class TaskService {
           || !current.isDue(clock.instant())) {
         return current;
       }
+      // 확인을 통과한 자연 종료만 같은 게스트 락 안에서 완료 횟수와 상태를 함께 저장한다.
       finished.set(true);
       return nextAfterNaturalEnd(guestId, current);
     }, updated -> {
@@ -52,14 +55,21 @@ public class TaskService {
   }
 
   public TimerState nextAfterNaturalEnd(Long guestId, TimerState current) {
-    // 자연 종료에서 최신 자동 전환 값을 읽는다. 대기와 일시정지는 사용자 조작을 기다린다.
+    // 자연 종료 시 최신 자동 전환 설정과 다음 집중에 쓸 길이를 읽는다.
     TimerSettings settings = readSettings(guestId);
-    Phase nextPhase = current.phase() == Phase.FOCUS ? Phase.SHORT_BREAK : Phase.FOCUS;
-    // 새 집중에 최신 길이를 적용하고, 이어지는 휴식에는 앞선 집중의 길이를 적용한다.
-    TimerDurations durations = nextPhase == Phase.FOCUS
-        ? settings.durations()
-        : current.appliedDurations();
-    TimerState next = ready(nextPhase, durations);
+    TimerState next = switch (current.phase()) {
+      case FOCUS -> {
+        // 집중을 완료한 뒤 순번을 올리고, 네 번째에는 이 집중의 긴 휴식 길이를 사용한다.
+        int completedFocusCount = current.completedFocusCount() + 1;
+        Phase breakPhase = completedFocusCount == FOCUS_INTERVALS_PER_CYCLE
+            ? Phase.LONG_BREAK : Phase.SHORT_BREAK;
+        yield ready(breakPhase, current.appliedDurations(), completedFocusCount);
+      }
+      // 일반 휴식은 완료 횟수를 유지하고, 긴 휴식이 끝나면 다음 집중을 새 주기로 시작한다.
+      case SHORT_BREAK -> ready(Phase.FOCUS, settings.durations(), current.completedFocusCount());
+      case LONG_BREAK -> ready(Phase.FOCUS, settings.durations(), 0);
+    };
+
     if (settings.autoTransition()) {
       // 예약이 늦게 실행되어도 다음 구간은 이전 구간의 예정 종료 시각에 시작한다.
       return next.start(UUID.randomUUID(), current.endsAt());
@@ -78,8 +88,8 @@ public class TaskService {
     publisher.publishReady(guestId, next);
   }
 
-  public TimerState readyFocus(Long guestId) {
-    return ready(Phase.FOCUS, readSettings(guestId).durations());
+  public TimerState readyFocus(Long guestId, int completedFocusCount) {
+    return ready(Phase.FOCUS, readSettings(guestId).durations(), completedFocusCount);
   }
 
   private TimerSettings readSettings(Long guestId) {
@@ -87,9 +97,9 @@ public class TaskService {
         .orElseThrow(() -> new ErrorException(ErrorCode.GUEST_NOT_FOUND));
   }
 
-  private TimerState ready(Phase phase, TimerDurations durations) {
+  private TimerState ready(Phase phase, TimerDurations durations, int completedFocusCount) {
     return new TimerState(null, phase, Status.READY, durations.durationMs(phase),
-        null, null, null, durations);
+        null, null, null, durations, completedFocusCount);
   }
 
 }

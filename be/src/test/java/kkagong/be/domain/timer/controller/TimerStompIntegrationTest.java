@@ -182,7 +182,7 @@ class TimerStompIntegrationTest {
       Instant endsAt = Instant.now().plusSeconds(1);
       TimerState rescheduled = new TimerState(started.intervalId(), started.phase(), started.status(),
           started.durationMs(), endsAt.minusMillis(started.durationMs()), endsAt, null,
-          started.appliedDurations());
+          started.appliedDurations(), started.completedFocusCount());
       taskService.scheduleEndTask(guestId, rescheduled);
       return rescheduled;
     });
