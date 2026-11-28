@@ -21,6 +21,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import kkagong.be.domain.guest.repository.GuestSettingRepository;
 import kkagong.be.domain.timer.entity.TimerDurations;
+import kkagong.be.domain.timer.dto.response.TimerNext;
 import kkagong.be.domain.timer.entity.TimerSettings;
 import kkagong.be.domain.timer.entity.TimerState;
 import kkagong.be.global.exception.ErrorCode;
@@ -67,7 +68,7 @@ class TimerServiceTest {
     assertThat(running.durationMs()).isEqualTo(40 * 60_000L);
     assertThat(running.endsAt()).isEqualTo(NOW.plusSeconds(40 * 60));
     verify(taskManager).scheduleEndTask(eq(GUEST_ID), eq(running.endsAt()), any(Runnable.class));
-    verify(publisher).publishRunning(GUEST_ID, running, NOW);
+    verify(publisher).publishRunning(GUEST_ID, running, NOW, null);
     verifyNoMoreInteractions(publisher);
   }
 
@@ -162,7 +163,7 @@ class TimerServiceTest {
   void resumeSchedulesSameIntervalUsingPausedRemainingTime() {
     TimerState paused = new TimerState(
         UUID.randomUUID(), TimerState.Phase.FOCUS, TimerState.Status.PAUSED,
-        FOCUS_DURATION_MS, null, null, 20 * 60_000L, DEFAULT_DURATIONS);
+        FOCUS_DURATION_MS, null, null, 20 * 60_000L, DEFAULT_DURATIONS, 0);
     store.update(GUEST_ID, current -> paused);
 
     service.resume(GUEST_ID, paused.intervalId());
@@ -170,7 +171,7 @@ class TimerServiceTest {
     TimerState resumed = store.find(GUEST_ID).orElseThrow();
     assertThat(resumed).isEqualTo(new TimerState(
         paused.intervalId(), paused.phase(), TimerState.Status.RUNNING,
-        FOCUS_DURATION_MS, NOW, NOW.plusSeconds(20 * 60), null, DEFAULT_DURATIONS));
+        FOCUS_DURATION_MS, NOW, NOW.plusSeconds(20 * 60), null, DEFAULT_DURATIONS, 0));
     verify(taskManager).scheduleEndTask(eq(GUEST_ID), eq(resumed.endsAt()), any(Runnable.class));
 
     assertThatThrownBy(() -> service.resume(GUEST_ID, paused.intervalId()))
@@ -193,7 +194,7 @@ class TimerServiceTest {
     TimerState ready = store.find(GUEST_ID).orElseThrow();
     assertThat(ready).isEqualTo(new TimerState(
         null, running.phase(), TimerState.Status.READY, running.durationMs(), null, null, null,
-        DEFAULT_DURATIONS));
+        DEFAULT_DURATIONS, 0));
 
     service.start(GUEST_ID, null);
     TimerState restarted = store.find(GUEST_ID).orElseThrow();
@@ -283,7 +284,8 @@ class TimerServiceTest {
       assertThat(next.intervalId()).isNotNull().isNotEqualTo(running.intervalId());
       assertThat(next.endsAt()).isEqualTo(NOW.plusSeconds(5 * 60));
       verify(taskManager).scheduleEndTask(eq(GUEST_ID), eq(next.endsAt()), any(Runnable.class));
-      verify(publisher).publishRunning(GUEST_ID, next, NOW);
+      verify(publisher).publishRunning(GUEST_ID, next, NOW,
+          new TimerNext(TimerState.Phase.FOCUS, FOCUS_DURATION_MS));
     } else {
       assertThat(next.status()).isEqualTo(TimerState.Status.READY);
       assertThat(next.intervalId()).isNull();
@@ -305,6 +307,6 @@ class TimerServiceTest {
   private TimerState storeRunningInterval(Instant endsAt) {
     return store.update(GUEST_ID, current -> new TimerState(
         UUID.randomUUID(), TimerState.Phase.FOCUS, TimerState.Status.RUNNING,
-        FOCUS_DURATION_MS, endsAt.minusMillis(FOCUS_DURATION_MS), endsAt, null, DEFAULT_DURATIONS));
+        FOCUS_DURATION_MS, endsAt.minusMillis(FOCUS_DURATION_MS), endsAt, null, DEFAULT_DURATIONS, 0));
   }
 }
