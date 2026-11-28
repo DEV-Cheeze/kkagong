@@ -78,7 +78,7 @@ public class TimerService {
       rejectExpiredAction(guestId, updated, intervalExpired.get());
       // 이번 요청에서 새 구간을 만든 경우에만 저장된 RUNNING을 알린다.
       if (newIntervalId.equals(updated.intervalId())) {
-        publisher.publishRunning(guestId, updated, updated.runningSince());
+        taskService.publishRunning(guestId, updated, updated.runningSince());
       }
     });
   }
@@ -177,7 +177,7 @@ public class TimerService {
     }, updated -> {
       rejectExpiredAction(guestId, updated, intervalExpired.get());
       // 앞선 PAUSE가 같은 락 안에서 발행을 끝낸 뒤 재개된 RUNNING을 보낸다.
-      publisher.publishRunning(guestId, updated, updated.runningSince());
+      taskService.publishRunning(guestId, updated, updated.runningSince());
     });
   }
 
@@ -241,7 +241,8 @@ public class TimerService {
         })
         .orElseGet(() -> taskService.readyFocus(guestId, 0));
 
-    return TimerInfoResponse.from(state, clock.instant());
+    // 구독 이후 조회하는 탭도 진행 중인 구간의 자동 전환 예고를 복원한다.
+    return TimerInfoResponse.from(state, clock.instant(), taskService.nextFor(guestId, state));
   }
 
   public void skip(Long guestId, UUID requestedIntervalId) {
@@ -273,7 +274,7 @@ public class TimerService {
     }, updated -> {
       // 상태를 저장한 뒤, 같은 게스트 락 안에서 확정된 전이를 한 번 통지한다.
       rejectExpiredAction(guestId, updated, intervalExpired.get());
-      publisher.publishRunning(guestId, updated, updated.runningSince());
+      taskService.publishRunning(guestId, updated, updated.runningSince());
     });
   }
 

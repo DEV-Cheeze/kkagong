@@ -174,6 +174,12 @@ class TimerStompIntegrationTest {
 
     JsonNode running = firstTab.nextState();
     assertThat(running.path("status").asString()).isEqualTo("RUNNING");
+    if (autoTransition) {
+      assertThat(running.path("next").path("phase").asString()).isEqualTo("SHORT_BREAK");
+      assertThat(running.path("next").path("durationMs").asLong()).isEqualTo(5 * 60_000L);
+    } else {
+      assertThat(running.path("next").isNull()).isTrue();
+    }
     assertThat(secondTab.nextState()).isEqualTo(running);
 
     // 실제 START로 생성된 구간을 종료 직전으로 옮겨 예약 작업을 확인한다.
@@ -199,6 +205,17 @@ class TimerStompIntegrationTest {
       assertThat(next.path("intervalId").asString()).isEqualTo(saved.intervalId().toString());
       assertThat(saved.endsAt()).isEqualTo(ending.endsAt().plusSeconds(5 * 60));
       assertThat(Instant.parse(next.path("endsAt").asString())).isEqualTo(saved.endsAt());
+      assertThat(next.path("next").path("phase").asString()).isEqualTo("FOCUS");
+      assertThat(next.path("next").path("durationMs").asLong()).isEqualTo(25 * 60_000L);
+
+      // 휴식 중 길이를 바꾸면 실행 중인 휴식을 유지하면서 다음 집중의 예고만 바뀐다.
+      assertThat(send("PATCH", "/api/v1/guests/me/timer-settings",
+          "{\"focusMinutes\":40}", cookie).statusCode()).isEqualTo(200);
+      JsonNode refreshed = firstTab.nextState();
+      assertThat(secondTab.nextState()).isEqualTo(refreshed);
+      assertThat(refreshed.path("intervalId")).isEqualTo(next.path("intervalId"));
+      assertThat(refreshed.path("endsAt")).isEqualTo(next.path("endsAt"));
+      assertThat(refreshed.path("next").path("durationMs").asLong()).isEqualTo(40 * 60_000L);
     }
 
     assertThat(firstTab.states.poll(300, MILLISECONDS)).isNull();

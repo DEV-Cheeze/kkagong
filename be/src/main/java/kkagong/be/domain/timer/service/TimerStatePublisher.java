@@ -3,6 +3,7 @@ package kkagong.be.domain.timer.service;
 import java.time.Instant;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import kkagong.be.domain.timer.dto.response.TimerNext;
 import kkagong.be.domain.timer.entity.TimerState;
 import lombok.RequiredArgsConstructor;
 import org.springframework.messaging.simp.SimpMessageHeaderAccessor;
@@ -20,7 +21,7 @@ public class TimerStatePublisher {
   private final SimpMessagingTemplate messagingTemplate;
   private final SimpUserRegistry userRegistry;
 
-  public void publishRunning(Long guestId, TimerState state, Instant serverNow) {
+  public void publishRunning(Long guestId, TimerState state, Instant serverNow, TimerNext next) {
     Map<String, Object> data = new LinkedHashMap<>();
     data.put("intervalId", state.intervalId());
     data.put("phase", state.phase());
@@ -28,7 +29,7 @@ public class TimerStatePublisher {
     data.put("durationMs", state.durationMs());
     data.put("endsAt", state.endsAt());
     data.put("serverNow", serverNow);
-    data.put("next", null);
+    data.put("next", next);
 
     sendToGuest(guestId.toString(), Map.of("type", "TIMER_STATE_CHANGED", "data", data));
   }

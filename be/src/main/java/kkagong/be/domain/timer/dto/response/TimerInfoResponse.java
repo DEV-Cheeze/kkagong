@@ -13,10 +13,11 @@ public record TimerInfoResponse(
     long durationMs,
     Instant endsAt,
     Instant serverNow,
-    Long remainingMs
+    Long remainingMs,
+    TimerNext next
 ) {
 
-  public static TimerInfoResponse from(TimerState state, Instant serverNow) {
+  public static TimerInfoResponse from(TimerState state, Instant serverNow, TimerNext next) {
     return TimerInfoResponse.builder()
         .intervalId(state.intervalId())
         .phase(state.phase())
@@ -25,6 +26,7 @@ public record TimerInfoResponse(
         .endsAt(state.endsAt())
         .serverNow(serverNow)
         .remainingMs(state.pausedRemainingMs())
+        .next(next)
         .build();
   }
 }

@@ -18,6 +18,7 @@ import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.UUID;
 import kkagong.be.domain.timer.entity.TimerDurations;
+import kkagong.be.domain.timer.dto.response.TimerNext;
 import kkagong.be.domain.timer.entity.TimerState;
 import kkagong.be.domain.timer.enums.TimerAction;
 import kkagong.be.domain.timer.service.InMemoryTimerStore;
@@ -412,7 +413,7 @@ class GuestSessionIntegrationTest {
     assertThat(paused.status()).isEqualTo(TimerState.Status.PAUSED);
     assertThat(paused.pausedRemainingMs()).isEqualTo(15 * 60_000L);
     assertThat(timerStore.find(guestId)).contains(paused);
-    verify(publisher).publishRunning(guestId, focus, startedAt);
+    verify(publisher).publishRunning(guestId, focus, startedAt, null);
     verify(publisher).publishPaused(guestId, paused);
     verifyNoMoreInteractions(publisher);
 
@@ -449,9 +450,12 @@ class GuestSessionIntegrationTest {
     assertThat(nextFocus.intervalId()).isNotNull().isNotEqualTo(runningBreak.intervalId());
     assertThat(nextFocus.endsAt()).isEqualTo(runningBreak.endsAt().plusSeconds(50 * 60));
     assertThat(nextFocus.appliedDurations()).isEqualTo(new TimerDurations(50, 10, 20));
-    verify(publisher).publishRunning(guestId, resumed, resumedAt);
-    verify(publisher).publishRunning(guestId, runningBreak, processedAt);
-    verify(publisher).publishRunning(guestId, nextFocus, runningBreak.endsAt());
+    verify(publisher).publishRunning(guestId, resumed, resumedAt,
+        new TimerNext(TimerState.Phase.SHORT_BREAK, 5 * 60_000L));
+    verify(publisher).publishRunning(guestId, runningBreak, processedAt,
+        new TimerNext(TimerState.Phase.FOCUS, 50 * 60_000L));
+    verify(publisher).publishRunning(guestId, nextFocus, runningBreak.endsAt(),
+        new TimerNext(TimerState.Phase.SHORT_BREAK, 10 * 60_000L));
     verifyNoMoreInteractions(publisher);
   }
 
@@ -474,6 +478,10 @@ class GuestSessionIntegrationTest {
     mockMvc.perform(timerActionRequest("{\"action\":\"START\"}").cookie(session))
         .andExpect(status().isOk());
     TimerState focus = timerStore.find(guestId).orElseThrow();
+    mockMvc.perform(get(TIMER_URL).secure(true).cookie(session))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.next.phase").value("SHORT_BREAK"))
+        .andExpect(jsonPath("$.data.next.durationMs").value(5 * 60_000L));
     mockMvc.perform(timerSettingsPatch("{\"autoTransition\":false}").cookie(session))
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.data.autoTransition").value(false));
@@ -485,7 +493,9 @@ class GuestSessionIntegrationTest {
         .andExpect(jsonPath("$.data.phase").value("SHORT_BREAK"))
         .andExpect(jsonPath("$.data.status").value("READY"))
         .andExpect(jsonPath("$.data.intervalId").doesNotExist());
-    verify(publisher).publishRunning(guestId, focus, startedAt);
+    verify(publisher).publishRunning(guestId, focus, startedAt,
+        new TimerNext(TimerState.Phase.SHORT_BREAK, 5 * 60_000L));
+    verify(publisher).publishRunning(guestId, focus, startedAt, null);
     verify(publisher).publishReady(guestId, timerStore.find(guestId).orElseThrow());
     verifyNoMoreInteractions(publisher);
   }
@@ -519,7 +529,7 @@ class GuestSessionIntegrationTest {
         .andExpect(jsonPath("$.data.status").value("READY"))
         .andExpect(jsonPath("$.data.intervalId").doesNotExist());
     assertThat(timerStore.find(guestId)).contains(readyBreak);
-    verify(publisher).publishRunning(guestId, focus, startedAt);
+    verify(publisher).publishRunning(guestId, focus, startedAt, null);
     verify(publisher).publishReady(guestId, readyBreak);
     verifyNoMoreInteractions(publisher);
 
@@ -538,8 +548,10 @@ class GuestSessionIntegrationTest {
     assertThat(nextFocus.status()).isEqualTo(TimerState.Status.RUNNING);
     assertThat(nextFocus.intervalId()).isNotNull().isNotEqualTo(runningBreak.intervalId());
     assertThat(nextFocus.runningSince()).isEqualTo(runningBreak.endsAt());
-    verify(publisher).publishRunning(guestId, runningBreak, breakStartedAt);
-    verify(publisher).publishRunning(guestId, nextFocus, runningBreak.endsAt());
+    verify(publisher).publishRunning(guestId, runningBreak, breakStartedAt,
+        new TimerNext(TimerState.Phase.FOCUS, 25 * 60_000L));
+    verify(publisher).publishRunning(guestId, nextFocus, runningBreak.endsAt(),
+        new TimerNext(TimerState.Phase.SHORT_BREAK, 5 * 60_000L));
     verifyNoMoreInteractions(publisher);
   }
 
@@ -613,7 +625,10 @@ class GuestSessionIntegrationTest {
     assertThat(longBreak.intervalId()).isNotNull().isNotEqualTo(focus.intervalId());
     assertThat(longBreak.runningSince()).isEqualTo(skippedAt);
     assertThat(longBreak.endsAt()).isEqualTo(skippedAt.plusSeconds(15 * 60));
-    verify(publisher).publishRunning(guestId, longBreak, skippedAt);
+    verify(publisher).publishRunning(guestId, focus, focus.runningSince(),
+        autoTransition ? new TimerNext(TimerState.Phase.LONG_BREAK, 15 * 60_000L) : null);
+    verify(publisher).publishRunning(guestId, longBreak, skippedAt,
+        autoTransition ? new TimerNext(TimerState.Phase.FOCUS, 25 * 60_000L) : null);
   }
 
   @Test
@@ -637,7 +652,47 @@ class GuestSessionIntegrationTest {
     assertThat(nextFocus.completedFocusCount()).isZero();
     assertThat(nextFocus.intervalId()).isNotNull();
     assertThat(nextFocus.runningSince()).isEqualTo(skippedAt);
-    verify(publisher).publishRunning(guestId, nextFocus, skippedAt);
+    verify(publisher).publishRunning(guestId, nextFocus, skippedAt, null);
+  }
+
+  @ParameterizedTest
+  @EnumSource(value = TimerState.Status.class, names = {"RUNNING", "PAUSED"})
+  void skippingActiveLongBreakStartsFocusWithResetCount(TimerState.Status breakStatus)
+      throws Exception {
+    String nickname = "긴휴식중스킵";
+    Cookie session = signUp(nickname);
+    Long guestId = guestIdOf(nickname);
+    TimerState fourthFocus = startFourthFocus(session, guestId, false);
+    TimerState readyBreak = finishAndCheckTransition(guestId, fourthFocus, false);
+    Instant breakStart = fourthFocus.endsAt().plusSeconds(30);
+    TimerState runningBreak = startTimerAt(session, guestId, breakStart);
+    assertThat(runningBreak.phase()).isEqualTo(TimerState.Phase.LONG_BREAK);
+
+    when(timerClock.instant()).thenReturn(breakStart.plusSeconds(30));
+    if (breakStatus == TimerState.Status.PAUSED) {
+      mockMvc.perform(timerActionRequest("""
+              {"action":"PAUSE","intervalId":"%s"}
+              """.formatted(runningBreak.intervalId())).cookie(session))
+          .andExpect(status().isOk());
+    }
+    TimerState activeBreak = timerStore.find(guestId).orElseThrow();
+    assertThat(activeBreak.status()).isEqualTo(breakStatus);
+    assertThat(activeBreak.completedFocusCount()).isEqualTo(readyBreak.completedFocusCount());
+
+    Instant skippedAt = breakStart.plusSeconds(60);
+    when(timerClock.instant()).thenReturn(skippedAt);
+    mockMvc.perform(timerActionRequest("""
+            {"action":"SKIP","intervalId":"%s"}
+            """.formatted(activeBreak.intervalId())).cookie(session))
+        .andExpect(status().isOk());
+
+    TimerState nextFocus = timerStore.find(guestId).orElseThrow();
+    assertThat(nextFocus.phase()).isEqualTo(TimerState.Phase.FOCUS);
+    assertThat(nextFocus.status()).isEqualTo(TimerState.Status.RUNNING);
+    assertThat(nextFocus.completedFocusCount()).isZero();
+    assertThat(nextFocus.intervalId()).isNotNull().isNotEqualTo(activeBreak.intervalId());
+    assertThat(nextFocus.runningSince()).isEqualTo(skippedAt);
+    verify(publisher).publishRunning(guestId, nextFocus, skippedAt, null);
   }
 
   @ParameterizedTest

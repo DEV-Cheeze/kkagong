@@ -2,9 +2,12 @@ package kkagong.be.domain.timer.service;
 
 import java.time.Clock;
 import java.time.Instant;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 import kkagong.be.domain.guest.repository.GuestSettingRepository;
+import kkagong.be.domain.guest.service.TimerSettingsChanged;
+import kkagong.be.domain.timer.dto.response.TimerNext;
 import kkagong.be.domain.timer.entity.TimerDurations;
 import kkagong.be.domain.timer.entity.TimerSettings;
 import kkagong.be.domain.timer.entity.TimerState;
@@ -15,6 +18,7 @@ import kkagong.be.global.exception.ErrorException;
 import kkagong.be.global.task.TimerTaskManager;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.event.TransactionalEventListener;
 
 @Service
 @RequiredArgsConstructor
@@ -91,11 +95,43 @@ public class TaskService {
     // 저장 직후 같은 게스트 락 안에서 예약을 정리하고 확정된 상태를 한 번 알린다.
     if (next.status() == Status.RUNNING) {
       scheduleEndTask(guestId, next);
-      publisher.publishRunning(guestId, next, clock.instant());
+      publishRunning(guestId, next, clock.instant());
       return;
     }
     taskManager.cancelEndTask(guestId);
     publisher.publishReady(guestId, next);
+  }
+
+  void publishRunning(Long guestId, TimerState running, Instant serverNow) {
+    publisher.publishRunning(guestId, running, serverNow, nextFor(guestId, running));
+  }
+
+  TimerNext nextFor(Long guestId, TimerState current) {
+    return current.status() == Status.RUNNING ? nextFor(current, readSettings(guestId)) : null;
+  }
+
+  private TimerNext nextFor(TimerState running, TimerSettings settings) {
+    if (!settings.autoTransition()) {
+      return null;
+    }
+    // 실제 전이와 같은 계산을 쓰며, 예고를 만들 때는 현재 상태나 예약을 바꾸지 않는다.
+    TimerState next = nextReadyAfterCompletion(running, settings.durations());
+    return new TimerNext(next.phase(), next.durationMs());
+  }
+
+  @TransactionalEventListener
+  public void refreshNextAfterSettingsChange(TimerSettingsChanged event) {
+    // DB 커밋 뒤 게스트별 락 안에서 현재 구간을 기준으로 예고만 갱신한다.
+    inMemoryTimerStore.updateIfPresent(event.guestId(), current -> current, current -> {
+      Instant now = clock.instant();
+      if (current.status() != Status.RUNNING || current.isDue(now)) {
+        return;
+      }
+      TimerNext next = nextFor(event.guestId(), current);
+      if (!Objects.equals(nextFor(current, event.previous()), next)) {
+        publisher.publishRunning(event.guestId(), current, now, next);
+      }
+    });
   }
 
   public TimerState readyFocus(Long guestId, int completedFocusCount) {

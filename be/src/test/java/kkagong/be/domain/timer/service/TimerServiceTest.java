@@ -21,6 +21,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Executors;
 import kkagong.be.domain.guest.repository.GuestSettingRepository;
 import kkagong.be.domain.timer.entity.TimerDurations;
+import kkagong.be.domain.timer.dto.response.TimerNext;
 import kkagong.be.domain.timer.entity.TimerSettings;
 import kkagong.be.domain.timer.entity.TimerState;
 import kkagong.be.global.exception.ErrorCode;
@@ -67,7 +68,7 @@ class TimerServiceTest {
     assertThat(running.durationMs()).isEqualTo(40 * 60_000L);
     assertThat(running.endsAt()).isEqualTo(NOW.plusSeconds(40 * 60));
     verify(taskManager).scheduleEndTask(eq(GUEST_ID), eq(running.endsAt()), any(Runnable.class));
-    verify(publisher).publishRunning(GUEST_ID, running, NOW);
+    verify(publisher).publishRunning(GUEST_ID, running, NOW, null);
     verifyNoMoreInteractions(publisher);
   }
 
@@ -283,7 +284,8 @@ class TimerServiceTest {
       assertThat(next.intervalId()).isNotNull().isNotEqualTo(running.intervalId());
       assertThat(next.endsAt()).isEqualTo(NOW.plusSeconds(5 * 60));
       verify(taskManager).scheduleEndTask(eq(GUEST_ID), eq(next.endsAt()), any(Runnable.class));
-      verify(publisher).publishRunning(GUEST_ID, next, NOW);
+      verify(publisher).publishRunning(GUEST_ID, next, NOW,
+          new TimerNext(TimerState.Phase.FOCUS, FOCUS_DURATION_MS));
     } else {
       assertThat(next.status()).isEqualTo(TimerState.Status.READY);
       assertThat(next.intervalId()).isNull();
